@@ -1,0 +1,50 @@
+body { min-width: 1280px; }
+.top-nav { position: sticky; top: 0; z-index: 1002; }
+.prompt-text { white-space: pre-wrap; font-family: Monaco, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; margin: 0; }
+.console-search { width: min(440px, 30vw); }
+.lesson-panel { padding: 0 4px 24px; }
+/* keep clear of the drawer close button */
+.lesson-panel-header { padding-right: 40px; }
+.lesson-progress-row { display: flex; align-items: center; gap: 8px; }
+.lesson-progress-row > :first-child { flex: 1; }
+.dialogue-text { white-space: pre-wrap; line-height: 1.6; }
+.inline-code { font-family: Monaco, Menlo, Consolas, monospace; font-size: 0.9em; background: rgba(127, 127, 127, 0.15); border-radius: 3px; padding: 0 3px; word-break: break-all; }
+.code-block { font-family: Monaco, Menlo, Consolas, monospace; font-size: 12px; background: #0f1b2a; color: #e6edf3; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 0; }
+.task-list { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.task-list .task-current { font-weight: 700; }
+.past-step { opacity: 0.8; }
+.browser-bar { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.input-with-suffix { display: flex; gap: 8px; align-items: center; }
+.input-with-suffix > :first-child { flex: 1; }
+.pre-line { white-space: pre-line; }
+.browser-body { white-space: pre-wrap; font-family: Monaco, Menlo, Consolas, monospace; font-size: 12px; background: rgba(127, 127, 127, 0.08); border: 1px solid rgba(127, 127, 127, 0.3); border-radius: 6px; padding: 10px; margin: 0; min-height: 40px; }
+.trace-list { margin: 4px 0 0; padding-left: 18px; }
+.route-editor { display: flex; flex-direction: column; gap: 10px; }
+.route-editor-row { display: grid; grid-template-columns: 1.2fr 1.6fr 0.7fr 0.6fr auto; gap: 12px; align-items: start; }
+.resource-map-item { border: 1px solid rgba(127, 127, 127, 0.35); border-radius: 8px; padding: 6px 10px; }
+.az-row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: center; }
+.sticky-summary { position: sticky; top: 80px; }
+.diagram-canvas { border: 1px solid rgba(127, 127, 127, 0.3); border-radius: 8px; background: #fff; }
+.diagram-node { display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: 10px; background: #fff; border-radius: 8px; color: #16191f; text-align: center; }
+.diagram-line { white-space: nowrap; }
+.diagram-sub { color: #5f6b7a; }
+.diagram-handle { opacity: 0; width: 1px; height: 1px; min-width: 0; min-height: 0; border: none; top: 34px !important; }
+.diagram-group { box-sizing: border-box; border-width: 2px; border-radius: 2px; position: relative; pointer-events: none; }
+.diagram-group-label { position: absolute; display: flex; align-items: flex-start; gap: 8px; white-space: nowrap; }
+.diagram-edge-label-host { overflow: visible; }
+.diagram-edge-label { box-sizing: border-box; height: 100%; display: flex; align-items: center; justify-content: center; white-space: nowrap; background: #fff; border: 1px solid; border-radius: 10px; }
+.code-textarea textarea { font-family: Monaco, Menlo, Consolas, monospace !important; font-size: 12px !important; line-height: 1.5 !important; }
+.json-block { max-height: 420px; overflow: auto; }
+.indent { padding-left: 24px; }
+.terminal { background: #0b0f14; color: #d6dde6; font-family: Monaco, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.45; padding: 12px 14px; border-radius: 6px; min-height: 420px; max-height: 70vh; overflow-y: auto; cursor: text; }
+.terminal pre { margin: 0 0 6px; white-space: pre-wrap; word-break: break-all; font-family: inherit; }
+.terminal-motd { color: #7f8b99; white-space: pre; margin-bottom: 8px; }
+.terminal-prompt { color: #7ee787; }
+.terminal-err { color: #ff9c8f; }
+.terminal-input-row { display: flex; gap: 8px; align-items: center; }
+.terminal-input { flex: 1; background: transparent; border: none; outline: none; color: inherit; font: inherit; caret-color: #d6dde6; }
+/* icon + text that wraps next to the icon, never below it */
+.service-link { display: flex; gap: 8px; align-items: flex-start; }
+.service-link img { flex: none; }
+.log-filter { width: 520px; }
+.log-message { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: Monaco, Menlo, Consolas, monospace; font-size: 12px; }
