@@ -1,6 +1,7 @@
 import Alert from '@cloudscape-design/components/alert';
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
+import ButtonDropdown from '@cloudscape-design/components/button-dropdown';
 import Container from '@cloudscape-design/components/container';
 import FormField from '@cloudscape-design/components/form-field';
 import Header from '@cloudscape-design/components/header';
@@ -16,9 +17,12 @@ import Toggle from '@cloudscape-design/components/toggle';
 import { useState } from 'react';
 import { changeRecord, createInvalidation, createValidationRecords, deleteCertificate, requestCertificate, updateDistribution, updateIpSet } from '../../sim/edge';
 import { regionOf } from '../../sim/env';
-import type { AwsEnv, AwsError, Certificate, DnsRecord, Distribution, WafRule } from '../../sim/types';
+import { sampledRequests } from '../../sim/ext/antiddos';
+import type { AwsEnv, AwsError, Certificate, DnsRecord, Distribution, WafRule, WafSample } from '../../sim/types';
 import { useConsole } from '../store';
-import { ConsoleLink, CopyableValue, DeleteModal, EditForm, formatDate, NotFound, ResourceDetail, ResourceTable, ResourceTabs, useGlobalEnv, useNavigate, useSelection } from '../ui';
+import { ConsoleLink, CopyableValue, DeleteModal, EditForm, formatDate, NotFound, queryParam, ResourceDetail, ResourceTable, ResourceTabs, useGlobalEnv, useNavigate, useSelection } from '../ui';
+import { WafTrafficGraph } from './antiddos';
+import { useNow } from './cloudwatch';
 
 const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 const certId = (c: Certificate) => c.certificateArn.split('/').pop()!;
@@ -372,7 +376,7 @@ export function DistributionList() {
       columns={[
         { id: 'id', header: 'ID', cell: (d) => <ConsoleLink to={distPath(d.id)}>{d.id}</ConsoleLink>, value: (d) => d.id },
         { id: 'desc', header: '説明', cell: (d) => d.comment ?? '-', value: (d) => d.comment ?? '' },
-        { id: 'domain', header: 'ドメイン名', cell: (d) => d.domainName, value: (d) => d.domainName },
+        { id: 'domain', header: 'ドメイン名', cell: (d) => <CopyableValue value={d.domainName} />, value: (d) => d.domainName },
         { id: 'aliases', header: '代替ドメイン名', cell: (d) => d.aliases.join(', ') || '-', value: (d) => d.aliases.join(' ') },
         { id: 'origin', header: 'オリジン', cell: (d) => originName(env, d) },
         { id: 'status', header: 'ステータス', cell: (d) => (d.enabled ? <StatusIndicator>有効</StatusIndicator> : <StatusIndicator type="stopped">無効</StatusIndicator>) },
@@ -626,8 +630,27 @@ export function CreateInvalidationPage({ id }: { id: string }) {
 // ---------------- WAF (CloudFront scope = global) ----------------
 
 const statementText = (env: AwsEnv, s: WafRule['statement']) =>
-  s.kind === 'ip-set' ? `IP セット ${env.ipSets.find((x) => x.arn === s.ipSetArn)?.name ?? s.ipSetArn} に一致する送信元 IP` : s.kind === 'managed' ? `AWS マネージドルールグループ: ${s.name}` : `URI パスが ${s.value} で始まる`;
-const WafAction = ({ a }: { a: string }) => <StatusIndicator type={a === 'BLOCK' || a === 'Block' ? 'error' : a === 'COUNT' || a === 'Count' ? 'info' : 'success'}>{a}</StatusIndicator>;
+  s.kind === 'ip-set'
+    ? `IP セット ${env.ipSets.find((x) => x.arn === s.ipSetArn)?.name ?? s.ipSetArn} に一致する送信元 IP`
+    : s.kind === 'managed'
+      ? `AWS マネージドルールグループ: ${s.name}`
+      : s.kind === 'rate-based'
+        ? `レートベース: 同じ送信元 IP から ${s.windowSec} 秒間に ${s.limit.toLocaleString()} リクエストを超えたもの`
+        : `URI パスが ${s.value} で始まる`;
+const WafAction = ({ a }: { a: string }) => <StatusIndicator type={a === 'BLOCK' || a === 'Block' ? 'error' : a === 'COUNT' || a === 'Count' ? 'info' : a === 'CHALLENGE' ? 'warning' : 'success'}>{a}</StatusIndicator>;
+/** a managed rule group's action: its rules' own actions (with overrides), or OverrideAction Count */
+const ruleAction = (r: WafRule) =>
+  r.statement.kind !== 'managed' ? (
+    <WafAction a={r.action} />
+  ) : r.action === 'Count' ? (
+    <WafAction a="Count" />
+  ) : (
+    <SpaceBetween size="xxxs">
+      <span>ルールアクションを使用</span>
+      {(r.statement.ruleActionOverrides ?? []).map((o) => <Box key={o.name} variant="small">{`${o.name}: ${o.action} にオーバーライド`}</Box>)}
+    </SpaceBetween>
+  );
+const DEFAULT_FILTER = '__default';
 
 export function WebAclList() {
   const env = useGlobalEnv();
@@ -651,8 +674,18 @@ export function WebAclList() {
 
 export function WebAclDetail({ name }: { name: string }) {
   const env = useGlobalEnv();
+  const path = useConsole((s) => s.path);
+  const navigate = useNavigate();
+  const now = useNow();
+  const [refreshed, refresh] = useState(0);
   const a = env.webAcls.find((x) => x.name === name);
+  const [selected, setSelected] = useSelection(a?.rules ?? [], (r) => r.name);
   if (!a) return <NotFound what="ウェブ ACL" id={name} />;
+  const filter = queryParam(path, 'rule') ?? '';
+  const at = Math.max(now, refreshed);
+  const keep = (s: WafSample) => (!filter ? true : filter === DEFAULT_FILTER ? !s.rule : s.rule === filter);
+  const samples = sampledRequests(env, a, at - 3 * 3_600_000, at, keep);
+  const filterOptions = [{ value: '', label: 'すべてのルール' }, ...a.rules.map((r) => ({ value: r.name, label: r.name })), { value: DEFAULT_FILTER, label: 'デフォルトアクション' }];
   return (
     <SpaceBetween size="l">
       <Header variant="h1">{a.name}</Header>
@@ -662,21 +695,50 @@ export function WebAclDetail({ name }: { name: string }) {
             id: 'overview',
             label: '概要',
             content: (
-              <Table
-                variant="container"
-                data-testid="waf-samples"
-                header={<Header counter={`(${a.samples.length})`} description="このウェブ ACL が検査したリクエストのサンプル (新しい順)">サンプリングされたリクエスト</Header>}
-                items={a.samples}
-                empty={<Box color="text-body-secondary">サンプリングされたリクエストはありません</Box>}
-                columnDefinitions={[
-                  { id: 'ip', header: '送信元 IP', cell: (s) => s.clientIp },
-                  { id: 'action', header: 'アクション', cell: (s) => <WafAction a={s.action} /> },
-                  { id: 'rule', header: '一致したルール', cell: (s) => s.rule ?? 'デフォルトアクション' },
-                  { id: 'uri', header: 'URI', cell: (s) => <Box variant="code">{s.uri}</Box> },
-                  { id: 'at', header: '時刻', cell: (s) => formatDate(s.at) },
-                  { id: 'host', header: 'ホスト', cell: (s) => s.host },
-                ]}
-              />
+              <SpaceBetween size="l">
+                <WafTrafficGraph acl={a} />
+                <Table
+                  variant="container"
+                  data-testid="waf-samples"
+                  wrapLines
+                  header={
+                    <Header
+                      counter={`(${samples.length})`}
+                      description="このウェブ ACL が検査したリクエストのサンプル (直近 3 時間、新しい順に最大 100 件)"
+                      actions={
+                        <SpaceBetween direction="horizontal" size="xs">
+                          <Hotspot hotspotId="waf-samples-filter" direction="left">
+                            <Select
+                              selectedOption={filterOptions.find((o) => o.value === filter) ?? filterOptions[0]}
+                              options={filterOptions}
+                              onChange={(e) => navigate(`/wafv2/webacls/${a.name}?tab=overview${e.detail.selectedOption.value ? `&rule=${encodeURIComponent(e.detail.selectedOption.value)}` : ''}`)}
+                              ariaLabel="ルールで絞り込む"
+                              data-testid="waf-samples-filter"
+                            />
+                          </Hotspot>
+                          <Button iconName="refresh" ariaLabel="更新" onClick={() => refresh(Date.now())} data-testid="waf-samples-refresh" />
+                        </SpaceBetween>
+                      }
+                    >
+                      サンプリングされたリクエスト
+                    </Header>
+                  }
+                  items={samples}
+                  empty={<Box color="text-body-secondary">サンプリングされたリクエストはありません</Box>}
+                  columnDefinitions={[
+                    { id: 'ip', header: '送信元 IP', cell: (s) => s.clientIp },
+                    { id: 'action', header: 'アクション', cell: (s) => <WafAction a={s.action} /> },
+                    { id: 'rule', header: '一致したルール', cell: (s) => s.rule ?? 'デフォルトアクション' },
+                    { id: 'inner', header: 'ルールグループ内のルール', cell: (s) => (s.ruleWithinGroup ? `${s.ruleWithinGroup}${s.overriddenAction ? ` (${s.overriddenAction} をカウントにオーバーライド)` : ''}` : '-') },
+                    { id: 'uri', header: 'URI', cell: (s) => <Box variant="code">{s.uri}</Box> },
+                    { id: 'labels', header: 'ラベル', cell: (s) => (s.labels?.length ? <SpaceBetween size="xxxs">{s.labels.map((l) => <Box key={l} variant="small"><code>{l}</code></Box>)}</SpaceBetween> : '-') },
+                    { id: 'ua', header: 'User-Agent', cell: (s) => <Box variant="small">{s.userAgent ?? '-'}</Box> },
+                    { id: 'country', header: '国', cell: (s) => s.country ?? 'JP' },
+                    { id: 'at', header: '時刻', cell: (s) => formatDate(s.at) },
+                    { id: 'host', header: 'ホスト', cell: (s) => s.host },
+                  ]}
+                />
+              </SpaceBetween>
             ),
           },
           {
@@ -686,12 +748,34 @@ export function WebAclDetail({ name }: { name: string }) {
               <Table
                 variant="container"
                 data-testid="waf-rules"
-                header={<Header counter={`(${a.rules.length})`} description={`上から (優先度の小さい順に) 評価し、最初に一致したルールのアクションを使います。どれにも一致しなければデフォルトアクション (${a.defaultAction}) です。`}>ルール</Header>}
+                header={
+                  <Header
+                    counter={`(${a.rules.length})`}
+                    description={`上から (優先度の小さい順に) 評価し、最初に一致したルールのアクションを使います。どれにも一致しなければデフォルトアクション (${a.defaultAction}) です。`}
+                    actions={
+                      <SpaceBetween direction="horizontal" size="xs">
+                        <Button disabled={selected.length !== 1} onClick={() => navigate(`/wafv2/webacls/${a.name}/rules/${selected[0].name}/edit`)} data-testid="waf-rule-edit">編集</Button>
+                        <Hotspot hotspotId="waf-add-rules" direction="left">
+                          <ButtonDropdown variant="primary" items={[{ id: 'managed', text: 'マネージドルールグループを追加' }]} onItemClick={() => navigate(`/wafv2/webacls/${a.name}/add-managed-rule-groups`)} data-testid="waf-add-rules">
+                            ルールを追加
+                          </ButtonDropdown>
+                        </Hotspot>
+                      </SpaceBetween>
+                    }
+                  >
+                    ルール
+                  </Header>
+                }
                 items={a.rules}
+                selectionType="single"
+                selectedItems={selected}
+                onSelectionChange={(e) => setSelected(e.detail.selectedItems)}
+                trackBy="name"
+                ariaLabels={{ selectionGroupLabel: 'ルールの選択', itemSelectionLabel: (_, r) => `${r.name} を選択`, allItemsSelectionLabel: () => 'すべて選択' }}
                 columnDefinitions={[
                   { id: 'name', header: '名前', cell: (r) => r.name },
                   { id: 'prio', header: '優先度', cell: (r) => String(r.priority) },
-                  { id: 'action', header: 'アクション', cell: (r) => <WafAction a={r.action} /> },
+                  { id: 'action', header: 'アクション', cell: ruleAction },
                   { id: 'stmt', header: 'ステートメント', cell: (r) => (r.statement.kind === 'ip-set' ? <ConsoleLink to={`/wafv2/ipsets/${env.ipSets.find((x) => x.arn === (r.statement as { ipSetArn: string }).ipSetArn)?.name}`}>{statementText(env, r.statement)}</ConsoleLink> : statementText(env, r.statement)) },
                 ]}
               />

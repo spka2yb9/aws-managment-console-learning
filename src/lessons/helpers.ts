@@ -18,7 +18,8 @@ export function copied(ctx: TaskContext, value: string | undefined): boolean {
 
 export const sgNamed = (env: AwsEnv, groupName: string) => env.securityGroups.find((g) => g.groupName === groupName);
 export const subnetNamed = (env: AwsEnv, name: string) => byName(env.subnets, name);
-export const instanceNamed = (env: AwsEnv, name: string) => byName(env.instances, name);
+/** a live instance with this Name tag first (a terminated one keeps its tags for a while), else any */
+export const instanceNamed = (env: AwsEnv, name: string) => byName(env.instances.filter((i) => i.state !== 'terminated' && i.state !== 'shutting-down'), name) ?? byName(env.instances, name);
 export const rtNamed = (env: AwsEnv, name: string) => byName(env.routeTables, name);
 
 /** Does SG `groupName` let `peer` (the learner's PC, or a group) in on TCP `port`? */

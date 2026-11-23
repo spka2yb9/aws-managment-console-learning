@@ -23,6 +23,9 @@ export function StatusBadge({ status }: { status: LessonStatus }) {
 
 type ResetTarget = { label: string; lessonIds: string[] };
 
+/** a lesson's progress keys: the console version and the CLI version (cli:<id>) */
+const withCli = (ids: string[]) => ids.flatMap((id) => [id, `cli:${id}`]);
+
 export function ProgressPage() {
   const navigate = useNavigate();
   const saved = useLiveQuery(async () => ({ progress: await db.progress.toArray(), sessionIds: await db.sessions.toCollection().primaryKeys() }), []);
@@ -71,7 +74,7 @@ export function ProgressPage() {
                         variant="h2"
                         description={course.description}
                         counter={`(${completed}/${rows.length})`}
-                        actions={<Button data-testid={`reset-course-${course.id}`} disabled={!saved || resetting || !lessonIds.some((id) => active.has(id))} onClick={() => { setError(false); setResetTarget({ label: course.title, lessonIds }); }}>セクションをリセット</Button>}
+                        actions={<Button data-testid={`reset-course-${course.id}`} disabled={!saved || resetting || !withCli(lessonIds).some((id) => active.has(id))} onClick={() => { setError(false); setResetTarget({ label: course.title, lessonIds: withCli(lessonIds) }); }}>セクションをリセット</Button>}
                       >
                         {course.title}
                       </Header>
@@ -82,9 +85,10 @@ export function ProgressPage() {
                       { id: 'n', header: '#', cell: (r) => r.lesson.number, width: 60 },
                       { id: 't', header: 'Lesson', cell: (r) => <Link href={`#/lessons/${r.lesson.id}`} onFollow={(e) => { e.preventDefault(); navigate({ to: '/lessons/$lessonId', params: { lessonId: r.lesson.id } }); }}>{r.lesson.title}</Link> },
                       { id: 's', header: 'Status', cell: (r) => <StatusBadge status={r.p?.status ?? 'not-started'} /> },
+                      { id: 'cli', header: 'CLI 版', cell: (r) => <StatusBadge status={progress.get(`cli:${r.lesson.id}`)?.status ?? 'not-started'} /> },
                       { id: 'step', header: 'Step', cell: (r) => (r.p ? `${Math.min(r.p.stepIndex + 1, r.lesson.steps.length)} / ${r.lesson.steps.length}` : '-') },
                       { id: 'u', header: 'Last activity', cell: (r) => (r.p ? new Date(r.p.updatedAt).toLocaleString() : '-') },
-                      { id: 'reset', header: 'Reset', cell: (r) => <Button wrapText={false} data-testid={`reset-lesson-${r.lesson.id}`} disabled={!saved || resetting || !active.has(r.lesson.id)} onClick={() => { setError(false); setResetTarget({ label: r.lesson.title, lessonIds: [r.lesson.id] }); }}>リセット</Button>, width: 120 },
+                      { id: 'reset', header: 'Reset', cell: (r) => <Button wrapText={false} data-testid={`reset-lesson-${r.lesson.id}`} disabled={!saved || resetting || !withCli([r.lesson.id]).some((id) => active.has(id))} onClick={() => { setError(false); setResetTarget({ label: r.lesson.title, lessonIds: withCli([r.lesson.id]) }); }}>リセット</Button>, width: 120 },
                     ]}
                   />
                 );

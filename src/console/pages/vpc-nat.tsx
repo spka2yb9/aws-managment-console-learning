@@ -12,7 +12,7 @@ import SpaceBetween from '@cloudscape-design/components/space-between';
 import { useState } from 'react';
 import { label, nameOf } from '../../sim/env';
 import type { AwsError, NatGateway } from '../../sim/types';
-import { createNatGateway, createVpcEndpoint, deleteNatGateway, deleteVpcEndpoint, isPublicSubnet, S3_PREFIX_LIST, s3EndpointService } from '../../sim/vpc';
+import { createNatGateway, createVpcEndpoint, deleteNatGateway, deleteVpcEndpoint, endpointServices, isPublicSubnet, S3_PREFIX_LIST } from '../../sim/vpc';
 import { vpcOption } from '../options';
 import { useConsole } from '../store';
 import { ActionMenu, ConsoleLink, CopyableValue, DeleteModal, EditForm, formatDate, nameCell, NotFound, ResourceDetail, ResourceStatus, ResourceTable, useEnv, useNavigate, useSelection } from '../ui';
@@ -165,9 +165,12 @@ export function EndpointList() {
         { id: 'id', header: 'VPC エンドポイント ID', cell: (e) => e.vpcEndpointId, value: (e) => e.vpcEndpointId },
         { id: 'vpc', header: 'VPC ID', cell: (e) => label(e.vpcId, env.vpcs.find((v) => v.vpcId === e.vpcId)), value: (e) => e.vpcId },
         { id: 'service', header: 'サービス名', cell: (e) => e.serviceName, value: (e) => e.serviceName },
-        { id: 'type', header: 'エンドポイントタイプ', cell: () => 'Gateway' },
+        { id: 'type', header: 'エンドポイントタイプ', cell: (e) => e.type, value: (e) => e.type },
         { id: 'state', header: 'ステータス', cell: (e) => <ResourceStatus state={e.state} /> },
-        { id: 'rts', header: 'ルートテーブル', cell: (e) => e.routeTableIds.map((id) => label(id, env.routeTables.find((r) => r.routeTableId === id))).join(', ') },
+        { id: 'rts', header: 'ルートテーブル', cell: (e) => e.routeTableIds.map((id) => label(id, env.routeTables.find((r) => r.routeTableId === id))).join(', ') || '-' },
+        { id: 'subnets', header: 'サブネット', cell: (e) => (e.networkInterfaces ?? []).map((n) => `${subnetName(env, n.subnetId)} (${n.privateIp})`).join(', ') || '-' },
+        { id: 'sgs', header: 'セキュリティグループ', cell: (e) => (e.securityGroupIds ?? []).map((g) => env.securityGroups.find((x) => x.groupId === g)?.groupName ?? g).join(', ') || '-' },
+        { id: 'dns', header: 'プライベート DNS 名', cell: (e) => (e.type === 'Interface' ? (e.privateDnsEnabled ? '有効' : '無効') : '-') },
       ]}
     />
   );
@@ -178,10 +181,17 @@ export function CreateEndpoint() {
   const navigate = useNavigate();
   const run = useConsole((s) => s.run);
   const [name, setName] = useState('');
+  const services = endpointServices(env);
+  const [service, setService] = useState(services[0].serviceName);
   const [vpcId, setVpcId] = useState('');
   const [rts, setRts] = useState<string[]>([]);
+  const [subnets, setSubnets] = useState<string[]>([]);
+  const [sgs, setSgs] = useState<string[]>([]);
+  const [privateDns, setPrivateDns] = useState(true);
   const [error, setError] = useState<AwsError | null>(null);
-  const service = s3EndpointService(env);
+  const type = services.find((x) => x.serviceName === service)!.type;
+  const option = (x: (typeof services)[number]) => ({ value: x.serviceName, label: x.serviceName, description: `タイプ: ${x.type}` });
+  const toggle = (list: string[], set: (v: string[]) => void, id: string, on: boolean) => set(on ? [...list, id] : list.filter((x) => x !== id));
   return (
     <EditForm
       title="エンドポイントを作成"
@@ -192,7 +202,8 @@ export function CreateEndpoint() {
       onCancel={() => navigate('/vpc/endpoints')}
       error={error}
       onSubmit={() => {
-        const r = run((d) => createVpcEndpoint(d, { vpcId, serviceName: service, routeTableIds: rts, name: name.trim() }), (id) => `VPC エンドポイント ${id} が作成されました`);
+        const input = type === 'Gateway' ? { routeTableIds: rts } : { subnetIds: subnets, securityGroupIds: sgs, privateDnsEnabled: privateDns };
+        const r = run((d) => createVpcEndpoint(d, { vpcId, serviceName: service, type, name: name.trim(), ...input }), (id) => `VPC エンドポイント ${id} が作成されました`);
         if (r.ok) navigate('/vpc/endpoints');
         else setError(r.error);
       }}
@@ -201,25 +212,51 @@ export function CreateEndpoint() {
         <SpaceBetween size="m">
           <FormField label="名前タグ - オプション"><Input value={name} onChange={(e) => setName(e.detail.value)} /></FormField>
           <FormField label="サービスカテゴリ"><RadioGroup value="aws" items={[{ value: 'aws', label: 'AWS のサービス' }]} /></FormField>
-          <FormField label="サービス" description="ゲートウェイエンドポイント (S3 / DynamoDB) は無料です。インターフェイスエンドポイントは時間とデータ量の料金がかかります (このシミュレーターでは未提供)。">
-            <Select selectedOption={{ value: service, label: service, description: 'タイプ: Gateway' }} options={[{ value: service, label: service, description: 'タイプ: Gateway' }]} data-testid="endpoint-service" />
+          <FormField label="サービス" description="ゲートウェイエンドポイント (S3 / DynamoDB) は無料です。インターフェイスエンドポイントは、サブネット (AZ) ごとの時間料金と処理したデータ量の料金がかかります。">
+            <Select selectedOption={option(services.find((x) => x.serviceName === service)!)} options={services.map(option)} onChange={(e) => setService(e.detail.selectedOption.value!)} filteringType="auto" data-testid="endpoint-service" />
           </FormField>
         </SpaceBetween>
       </Container>
       <Container header={<Header variant="h2">ネットワーク設定</Header>}>
         <SpaceBetween size="m">
           <FormField label="VPC">
-            <Select selectedOption={vpcId ? vpcOption(env.vpcs.find((v) => v.vpcId === vpcId)!) : null} placeholder="VPC を選択" options={env.vpcs.map(vpcOption)} onChange={(e) => { setVpcId(e.detail.selectedOption.value!); setRts([]); }} data-testid="endpoint-vpc" />
+            <Select selectedOption={vpcId ? vpcOption(env.vpcs.find((v) => v.vpcId === vpcId)!) : null} placeholder="VPC を選択" options={env.vpcs.map(vpcOption)} onChange={(e) => { setVpcId(e.detail.selectedOption.value!); setRts([]); setSubnets([]); setSgs([]); }} data-testid="endpoint-vpc" />
           </FormField>
-          <FormField label="ルートテーブル" description={`選択したルートテーブルに、送信先 ${S3_PREFIX_LIST} (S3) → このエンドポイント のルートが追加されます。`}>
-            <SpaceBetween size="xxs">
-              {env.routeTables.filter((rt) => rt.vpcId === vpcId).map((rt) => (
-                <Checkbox key={rt.routeTableId} checked={rts.includes(rt.routeTableId)} onChange={(e) => setRts(e.detail.checked ? [...rts, rt.routeTableId] : rts.filter((x) => x !== rt.routeTableId))} data-testid={`endpoint-rt-${nameOf(rt) || rt.routeTableId}`}>
-                  {label(rt.routeTableId, rt)}
-                </Checkbox>
-              ))}
-            </SpaceBetween>
-          </FormField>
+          {type === 'Gateway' ? (
+            <FormField label="ルートテーブル" description={`選択したルートテーブルに、送信先 ${S3_PREFIX_LIST} (S3) → このエンドポイント のルートが追加されます。`}>
+              <SpaceBetween size="xxs">
+                {env.routeTables.filter((rt) => rt.vpcId === vpcId).map((rt) => (
+                  <Checkbox key={rt.routeTableId} checked={rts.includes(rt.routeTableId)} onChange={(e) => toggle(rts, setRts, rt.routeTableId, e.detail.checked)} data-testid={`endpoint-rt-${nameOf(rt) || rt.routeTableId}`}>
+                    {label(rt.routeTableId, rt)}
+                  </Checkbox>
+                ))}
+              </SpaceBetween>
+            </FormField>
+          ) : (
+            <>
+              <FormField label="追加設定" description="サービスの名前 (例: ssm.ap-northeast-1.amazonaws.com) を、VPC の中ではこのエンドポイントの IP アドレスに解決させます。VPC の DNS ホスト名と DNS 解決の両方が有効である必要があります。">
+                <Checkbox checked={privateDns} onChange={(e) => setPrivateDns(e.detail.checked)} data-testid="endpoint-private-dns">DNS 名を有効化</Checkbox>
+              </FormField>
+              <FormField label="サブネット" description="エンドポイントのネットワークインターフェイスを作るサブネットを、アベイラビリティーゾーンごとに 1 つまで選択します。">
+                <SpaceBetween size="xxs">
+                  {env.subnets.filter((x) => x.vpcId === vpcId).map((x) => (
+                    <Checkbox key={x.subnetId} checked={subnets.includes(x.subnetId)} onChange={(e) => toggle(subnets, setSubnets, x.subnetId, e.detail.checked)} data-testid={`endpoint-subnet-${nameOf(x) || x.subnetId}`}>
+                      {`${label(x.subnetId, x)} (${x.availabilityZone})`}
+                    </Checkbox>
+                  ))}
+                </SpaceBetween>
+              </FormField>
+              <FormField label="セキュリティグループ" description="ネットワークインターフェイスに付けるセキュリティグループです。接続元から HTTPS (TCP 443) を許可する必要があります。選択しない場合は VPC の default セキュリティグループになります。">
+                <SpaceBetween size="xxs">
+                  {env.securityGroups.filter((g) => g.vpcId === vpcId).map((g) => (
+                    <Checkbox key={g.groupId} checked={sgs.includes(g.groupId)} onChange={(e) => toggle(sgs, setSgs, g.groupId, e.detail.checked)} data-testid={`endpoint-sg-${g.groupName}`}>
+                      {`${g.groupId} (${g.groupName})`}
+                    </Checkbox>
+                  ))}
+                </SpaceBetween>
+              </FormField>
+            </>
+          )}
         </SpaceBetween>
       </Container>
     </EditForm>

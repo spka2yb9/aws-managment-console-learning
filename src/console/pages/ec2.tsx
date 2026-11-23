@@ -130,6 +130,7 @@ export function InstanceList() {
                   { id: 'iam', text: 'IAM ロールを変更', disabled: sel.length !== 1, onClick: () => navigate(`/ec2/instances/${sel[0].instanceId}/modify-iam-role`) },
                 ],
               },
+              { text: 'インスタンスの設定', items: [{ id: 'imds', text: 'インスタンスメタデータオプションを変更', disabled: sel.length !== 1, onClick: () => navigate(`/ec2/instances/${sel[0].instanceId}/modify-metadata-options`) }] },
             ]}
           />
           <Hotspot hotspotId="ec2-launch" direction="right">
@@ -216,6 +217,7 @@ export function InstanceDetail({ id }: { id: string }) {
                     { id: 'iam', text: 'IAM ロールを変更', onClick: () => navigate(`/ec2/instances/${id}/modify-iam-role`) },
                   ],
                 },
+                { text: 'インスタンスの設定', items: [{ id: 'imds', text: 'インスタンスメタデータオプションを変更', onClick: () => navigate(`/ec2/instances/${id}/modify-metadata-options`) }] },
               ]}
             />
           </SpaceBetween>

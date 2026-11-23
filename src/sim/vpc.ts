@@ -80,6 +80,7 @@ export function usedIps(env: AwsEnv, subnetId: string): string[] {
     ...env.loadBalancers.flatMap((lb) => (lb.nodeIps[subnetId] ? [lb.nodeIps[subnetId]] : [])),
     ...env.dbInstances.filter((d) => d.subnetId === subnetId).map((d) => d.privateIpAddress),
     ...(env.ecsTasks ?? []).filter((t) => t.subnetId === subnetId && t.lastStatus !== 'STOPPED').map((t) => t.privateIpAddress),
+    ...env.vpcEndpoints.flatMap((e) => (e.networkInterfaces ?? []).filter((n) => n.subnetId === subnetId).map((n) => n.privateIp)),
   ];
 }
 
@@ -284,8 +285,7 @@ export function subnetDependencies(env: AwsEnv, subnetId: string): string[] {
     ...env.dbInstances.filter((d) => d.subnetId === subnetId).map((d) => `DB インスタンス ${d.dbInstanceIdentifier}`),
     ...env.dbSubnetGroups.filter((g) => g.subnetIds.includes(subnetId)).map((g) => `DB サブネットグループ ${g.dbSubnetGroupName}`),
     ...(env.natGateways ?? []).filter((n) => n.subnetId === subnetId && n.state !== 'deleted').map((n) => `NAT ゲートウェイ ${label(n.natGatewayId, n)}`),
-    ...(env.ecsTasks ?? []).filter((t) => t.subnetId === subnetId && t.lastStatus !== 'STOPPED').map((t) => `ECS タスク ${t.taskArn.split('/').pop()}`),
-    ...(env.autoScalingGroups ?? []).filter((g) => g.subnetIds.includes(subnetId)).map((g) => `Auto Scaling グループ ${g.autoScalingGroupName}`),
+    ...(env.ecsTasks ?? []).filter((t) => t.subnetId === subnetId && t.lastStatus !== 'STOPPED').map((t) => `ECS タスク ${t.taskArn.split('/').pop()}`),    ...(env.autoScalingGroups ?? []).filter((g) => g.subnetIds.includes(subnetId)).map((g) => `Auto Scaling グループ ${g.autoScalingGroupName}`),
   ];
 }
 
@@ -371,18 +371,79 @@ export function advanceNatGateways(env: AwsEnv, now: number): boolean {
   return changed;
 }
 
-export function createVpcEndpoint(env: AwsEnv, input: { vpcId: string; serviceName: string; routeTableIds: string[]; name?: string }, now = Date.now()): string {
-  getVpc(env, input.vpcId);
-  if (input.serviceName !== s3EndpointService(env)) throw new AwsError('InvalidServiceName', `The Vpc Endpoint Service '${input.serviceName}' does not exist`);
-  if (env.vpcEndpoints.some((e) => e.vpcId === input.vpcId && e.serviceName === input.serviceName)) throw new AwsError('RouteAlreadyExists', `route table already has a route with destination-prefix-list-id ${S3_PREFIX_LIST}`);
+/** Interface endpoints the simulator knows (Systems Manager and CloudWatch Logs). ponytail: add services when a lesson needs them */
+export const INTERFACE_ENDPOINT_SERVICES = ['ssm', 'ssmmessages', 'ec2messages', 'logs'];
+
+/** What the console's service list shows: S3 (Gateway) and the interface services of the Region. */
+export const endpointServices = (env: AwsEnv): { serviceName: string; type: 'Gateway' | 'Interface' }[] => [
+  { serviceName: s3EndpointService(env), type: 'Gateway' },
+  ...INTERFACE_ENDPOINT_SERVICES.map((s) => ({ serviceName: `com.amazonaws.${env.region}.${s}`, type: 'Interface' as const })),
+];
+
+export interface CreateVpcEndpointInput {
+  vpcId: string;
+  serviceName: string;
+  /** default Gateway */
+  type?: 'Gateway' | 'Interface';
+  routeTableIds?: string[];
+  subnetIds?: string[];
+  /** Interface: none = the VPC's default security group */
+  securityGroupIds?: string[];
+  /** Interface: default true */
+  privateDnsEnabled?: boolean;
+  name?: string;
+}
+
+export function createVpcEndpoint(env: AwsEnv, input: CreateVpcEndpointInput, now = Date.now()): string {
+  const vpc = getVpc(env, input.vpcId);
+  const type = input.type ?? 'Gateway';
+  const svc = endpointServices(env).find((s) => s.serviceName === input.serviceName);
+  if (!svc) throw new AwsError('InvalidServiceName', `The Vpc Endpoint Service '${input.serviceName}' does not exist`);
+  if (svc.type !== type) throw new AwsError('InvalidParameter', `Endpoint type (${type}) does not match available service types ([${svc.type}]).`);
   const vpcEndpointId = newId('vpce');
-  for (const id of input.routeTableIds) {
+  if (type === 'Interface') return createInterfaceEndpoint(env, vpcEndpointId, vpc.vpcId, input, now);
+  const routeTableIds = input.routeTableIds ?? [];
+  if (env.vpcEndpoints.some((e) => e.vpcId === input.vpcId && e.serviceName === input.serviceName)) throw new AwsError('RouteAlreadyExists', `route table already has a route with destination-prefix-list-id ${S3_PREFIX_LIST}`);
+  for (const id of routeTableIds) {
     const rt = getRouteTable(env, id);
     if (rt.vpcId !== input.vpcId) throw new AwsError('InvalidParameter', `Route table ${id} does not belong to vpc ${input.vpcId}`);
     rt.routes.push({ destinationCidrBlock: '', destinationPrefixListId: S3_PREFIX_LIST, gatewayId: vpcEndpointId, origin: 'CreateVpcEndpoint' });
   }
-  env.vpcEndpoints.push({ vpcEndpointId, vpcId: input.vpcId, serviceName: input.serviceName, type: 'Gateway', routeTableIds: [...input.routeTableIds], state: 'available', createdAt: now, tags: nameTags(input.name) });
-  trail(env, { source: 'ec2', name: 'CreateVpcEndpoint', resources: [['AWS::EC2::VPCEndpoint', vpcEndpointId]], request: { vpcEndpointType: 'Gateway', vpcId: input.vpcId, serviceName: input.serviceName, routeTableIdSet: input.routeTableIds }, response: { vpcEndpoint: { vpcEndpointId, state: 'available' } } });
+  env.vpcEndpoints.push({ vpcEndpointId, vpcId: input.vpcId, serviceName: input.serviceName, type: 'Gateway', routeTableIds: [...routeTableIds], state: 'available', createdAt: now, tags: nameTags(input.name) });
+  trail(env, { source: 'ec2', name: 'CreateVpcEndpoint', resources: [['AWS::EC2::VPCEndpoint', vpcEndpointId]], request: { vpcEndpointType: 'Gateway', vpcId: input.vpcId, serviceName: input.serviceName, routeTableIdSet: routeTableIds }, response: { vpcEndpoint: { vpcEndpointId, state: 'available' } } });
+  return vpcEndpointId;
+}
+
+/** The service's regional DNS name (ssm.ap-northeast-1.amazonaws.com) that private DNS takes over inside the VPC. */
+export const endpointDnsName = (serviceName: string) => serviceName.split('.').slice(2).reverse().join('.') + '.amazonaws.com';
+
+// ponytail: interface endpoints are available at once (real: pending for a minute or two) and have no endpoint policy.
+function createInterfaceEndpoint(env: AwsEnv, vpcEndpointId: string, vpcId: string, input: CreateVpcEndpointInput, now: number): string {
+  const vpc = getVpc(env, vpcId);
+  const privateDnsEnabled = input.privateDnsEnabled ?? true;
+  const subnets = (input.subnetIds ?? []).map((id) => getSubnet(env, id));
+  for (const s of subnets) if (s.vpcId !== vpcId) throw new AwsError('InvalidParameter', `The subnet ID '${s.subnetId}' does not belong to the VPC '${vpcId}'`);
+  const dup = subnets.find((s, n) => subnets.some((o, m) => m < n && o.availabilityZone === s.availabilityZone));
+  if (dup) throw new AwsError('DuplicateSubnetsInSameZone', `Found another VPC endpoint subnet in the availability zone of ${dup.subnetId}. VPC endpoint subnets should be in different availability zones supported by the VPC endpoint service.`);
+  const groupIds = input.securityGroupIds?.length ? input.securityGroupIds : env.securityGroups.filter((g) => g.vpcId === vpcId && g.groupName === 'default').map((g) => g.groupId);
+  for (const id of groupIds) {
+    const g = env.securityGroups.find((x) => x.groupId === id);
+    if (!g || g.vpcId !== vpcId) throw new AwsError('InvalidSecurityGroupId.NotFound', `The security group '${id}' does not exist in VPC '${vpcId}'`);
+  }
+  if (privateDnsEnabled) {
+    if (!vpc.enableDnsSupport || !vpc.enableDnsHostnames) throw new AwsError('InvalidParameter', `Enabling private DNS requires both enableDnsSupport and enableDnsHostnames VPC attributes set to true for ${vpcId}`);
+    if (env.vpcEndpoints.some((e) => e.vpcId === vpcId && e.serviceName === input.serviceName && e.privateDnsEnabled))
+      throw new AwsError('InvalidParameter', `private-dns-enabled cannot be set because there is already a conflicting DNS domain for ${endpointDnsName(input.serviceName)} in the VPC ${vpcId}`);
+  }
+  const networkInterfaces = subnets.map((s) => ({ networkInterfaceId: newId('eni'), subnetId: s.subnetId, privateIp: allocateIp(env, s.subnetId) }));
+  env.vpcEndpoints.push({ vpcEndpointId, vpcId, serviceName: input.serviceName, type: 'Interface', routeTableIds: [], networkInterfaces, securityGroupIds: groupIds, privateDnsEnabled, state: 'available', createdAt: now, tags: nameTags(input.name) });
+  trail(env, {
+    source: 'ec2',
+    name: 'CreateVpcEndpoint',
+    resources: [['AWS::EC2::VPCEndpoint', vpcEndpointId]],
+    request: { vpcEndpointType: 'Interface', vpcId, serviceName: input.serviceName, subnetIdSet: subnets.map((s) => s.subnetId), securityGroupIdSet: groupIds, privateDnsEnabled },
+    response: { vpcEndpoint: { vpcEndpointId, vpcEndpointType: 'Interface', state: 'pending', networkInterfaceIdSet: networkInterfaces.map((n) => n.networkInterfaceId) } },
+  });
   return vpcEndpointId;
 }
 

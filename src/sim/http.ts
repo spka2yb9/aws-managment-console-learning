@@ -5,6 +5,8 @@ import { label } from './env';
 import { canConnect, canConnectFromInternet, CLIENT_IP, type Check } from './network';
 import { isPolicyPublic, s3GetObject, s3ListObjects } from './s3';
 import { certCovers, evaluateWaf, resolve } from './edge';
+import { originResponseTime, OVERLOADED_SECONDS, toSample } from './ext/antiddos';
+import { azIdOf, impairedAt, shiftedAwayAz } from './ext/zonalshift';
 import { latestObject } from './s3';
 import { AwsError, type AwsEnv, type CachedObject, type Distribution, type SimulatedApp, type WebAcl } from './types';
 
@@ -45,6 +47,14 @@ function s3Response(env: AwsEnv, url: string, bucket: string, key: string, https
   }
 }
 
+/** who sends the request: AWS WAF's Challenge needs a client that runs JavaScript (a browser) */
+export interface HttpClient {
+  javascript: boolean;
+  userAgent: string;
+}
+export const BROWSER_CLIENT: HttpClient = { javascript: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' };
+export const CURL_CLIENT: HttpClient = { javascript: false, userAgent: 'curl/8.5.0' };
+
 export interface HttpEffects {
   cache?: { distributionId: string; entry: CachedObject };
   waf?: { aclArn: string; sample: WebAcl['samples'][number] };
@@ -70,7 +80,7 @@ export interface HttpResult {
   hops: Hop[];
 }
 
-const STATUS_TEXT: Record<number, string> = { 200: 'OK', 301: 'Moved Permanently', 403: 'Forbidden', 404: 'Not Found', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Temporarily Unavailable', 504: 'Gateway Time-out' };
+const STATUS_TEXT: Record<number, string> = { 200: 'OK', 202: 'Accepted', 301: 'Moved Permanently', 403: 'Forbidden', 404: 'Not Found', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Temporarily Unavailable', 504: 'Gateway Time-out' };
 
 function response(url: string, status: number, body: string, hops: Hop[]): HttpResult {
   return { url, status, statusText: STATUS_TEXT[status], body, hops };
@@ -85,13 +95,16 @@ function appResponse(env: AwsEnv, url: string, backend: { id: string; name: stri
   const app = backend.app!;
   const name = backend.name;
   if (path === app.healthCheckPath) return response(url, 200, 'OK', hops);
-  if (path !== '/') return response(url, 404, 'Cannot GET ' + path, hops);
+  const api = path.startsWith('/app/');
+  if (path !== '/' && !api) return response(url, 404, 'Cannot GET ' + path, hops);
   if (app.dbInstanceIdentifier) {
     const db = env.dbInstances.find((d) => d.dbInstanceIdentifier === app.dbInstanceIdentifier);
     const conn = db ? canConnect(env, backend.id, db.dbInstanceIdentifier, 'tcp', db.port) : { ok: false, checks: [{ label: 'DB', ok: false, detail: `${app.dbInstanceIdentifier} が存在しません` }] };
     hops.push(hop(`${name} → ${app.dbInstanceIdentifier} (TCP ${db?.port ?? '?'})`, conn.checks));
     if (!conn.ok) return response(url, 500, `Internal Server Error\n\nError: connect ETIMEDOUT ${db?.endpointAddress ?? app.dbInstanceIdentifier}:${db?.port ?? ''}\n(アプリがDatabaseに接続できません)`, hops);
   }
+  // /app/...: the JSON API the shop's smartphone app calls (lesson 42)
+  if (api) return response(url, 200, `{"server":"${name}","path":"${path}","items":[]}`, hops);
   return response(url, 200, `Hello from ${name}${app.version ? `\nwebapp ${app.version}` : ''}${app.dbInstanceIdentifier ? '\nDatabase: connected' : ''}`, hops);
 }
 
@@ -100,7 +113,7 @@ function appResponse(env: AwsEnv, url: string, backend: { id: string; name: stri
  * ALB semantics: no registered/usable targets -> 503; if no target is healthy the ALB "fails open" and still
  * routes to the unhealthy ones; SG blocking LB -> target -> 504; nothing listening on the target port -> 502.
  */
-export function simulateHttp(env: AwsEnv, rawUrl: string, clientIp = CLIENT_IP): HttpResult {
+export function simulateHttp(env: AwsEnv, rawUrl: string, clientIp = CLIENT_IP, client: HttpClient = BROWSER_CLIENT): HttpResult {
   let u: URL;
   try {
     u = new URL(/^[a-z]+:\/\//i.test(rawUrl.trim()) ? rawUrl.trim() : `http://${rawUrl.trim()}`);
@@ -122,7 +135,7 @@ export function simulateHttp(env: AwsEnv, rawUrl: string, clientIp = CLIENT_IP):
   }
 
   const dist = env.distributions?.find((d) => d.domainName === host);
-  if (dist) return cloudFrontResponse(env, u, requestHost, dist, clientIp, hops);
+  if (dist) return cloudFrontResponse(env, u, requestHost, dist, clientIp, hops, client);
 
   const s3 = s3Target(host, u.pathname);
   if (s3) return s3Response(env, url, s3.bucket, s3.key, u.protocol === 'https:', clientIp);
@@ -138,18 +151,22 @@ export function simulateHttp(env: AwsEnv, rawUrl: string, clientIp = CLIENT_IP):
     if (u.protocol === 'https:') return { url, error: 'ERR_SSL_PROTOCOL_ERROR', body: '', hops };
     const tg = env.targetGroups.find((t) => t.targetGroupArn === listener.targetGroupArn)!;
     const health = tg.targets.map((t) => ({ t, h: targetHealth(env, tg.targetGroupArn, t) }));
-    const healthy = health.filter((x) => x.h.state === 'healthy');
+    // Route 53 ARC zonal shift: no new requests to the targets in the AZ traffic is shifted away from
+    const away = shiftedAwayAz(env, lb, Date.now());
+    const shifted = (x: (typeof health)[number]) => !!away && backendOf(env, tg, x.t)?.availabilityZone === away;
+    const healthy = health.filter((x) => x.h.state === 'healthy' && !shifted(x));
     // Fail open: with zero healthy targets, requests go to all unhealthy targets.
-    const routable = healthy.length ? healthy : health.filter((x) => x.h.state === 'unhealthy');
+    const routable = healthy.length ? healthy : health.filter((x) => x.h.state === 'unhealthy' && !shifted(x));
     hops.push(
       hop(`${lb.loadBalancerName} → ターゲットグループ ${tg.targetGroupName}`, [
         {
           label: '登録済みターゲット',
           ok: routable.length > 0,
           detail: tg.targets.length
-            ? `${health.map((x) => `${x.t.id}:${x.t.port} ${x.h.state}${x.h.reason ? ` (${x.h.reason})` : ''}`).join(', ')}${!healthy.length && routable.length ? ' — 正常 (healthy) なターゲットが無いため、ALB は異常なターゲットにも転送します (fail open)' : ''}`
+            ? `${health.map((x) => `${x.t.id}:${x.t.port} ${x.h.state}${x.h.reason ? ` (${x.h.reason})` : ''}${shifted(x) ? ' [zonal_shift_active]' : ''}`).join(', ')}${!healthy.length && routable.length ? ' — 正常 (healthy) なターゲットが無いため、ALB は異常なターゲットにも転送します (fail open)' : ''}`
             : 'ターゲットが登録されていません',
         },
+        ...(away ? [{ label: 'ゾーンシフト (ARC)', ok: true, detail: `${away} (${azIdOf(away)}) からトラフィックを移動中です。このゾーンのターゲットには新しいリクエストを送りません` }] : []),
       ]),
     );
     if (!routable.length) return response(url, 503, '503 Service Temporarily Unavailable', hops);
@@ -158,9 +175,13 @@ export function simulateHttp(env: AwsEnv, rawUrl: string, clientIp = CLIENT_IP):
     const backend = backendOf(env, tg, t)!;
     const conn = canConnect(env, lb.loadBalancerArn, backend.id, 'tcp', t.port);
     const listening = backend.app?.port === t.port;
-    hops.push(hop(`${lb.loadBalancerName} → ${backend.name} (TCP ${t.port})`, [...conn.checks, ...(conn.ok ? [{ label: 'アプリケーション', ok: listening, detail: listening ? `ポート ${t.port} で待ち受け中` : `ポート ${t.port} で待ち受けているプロセスがありません (Connection refused)` }] : [])]));
+    // gray failure (lesson 47): the AZ's network drops packets, so real requests time out while the tiny /health check passes
+    const gray = listening && u.pathname !== backend.app?.healthCheckPath && impairedAt(env, backend.availabilityZone, Date.now());
+    const appCheck = gray ? `${backend.availabilityZone} のターゲットが 5 秒以上応答せず、アプリがタイムアウトしました (HTTP 500)。ヘルスチェック (${backend.app?.healthCheckPath}) は成功しています` : listening ? `ポート ${t.port} で待ち受け中` : `ポート ${t.port} で待ち受けているプロセスがありません (Connection refused)`;
+    hops.push(hop(`${lb.loadBalancerName} → ${backend.name} (TCP ${t.port})`, [...conn.checks, ...(conn.ok ? [{ label: 'アプリケーション', ok: listening && !gray, detail: appCheck }] : [])]));
     if (!conn.ok) return response(url, 504, '504 Gateway Time-out', hops);
     if (!listening) return response(url, 502, '502 Bad Gateway', hops);
+    if (gray) return response(url, 500, 'Internal Server Error\n\nError: upstream request timed out after 5003 ms', hops);
     return appResponse(env, url, backend, u.pathname, hops);
   }
 
@@ -187,7 +208,7 @@ function oacAllows(env: AwsEnv, bucket: string, d: Distribution): boolean {
 }
 
 /** CloudFront: host / TLS checks, HTTP -> HTTPS redirect, WAF, the edge cache and the origin fetch. */
-function cloudFrontResponse(env: AwsEnv, u: URL, requestHost: string, d: Distribution, clientIp: string, hops: Hop[]): HttpResult {
+function cloudFrontResponse(env: AwsEnv, u: URL, requestHost: string, d: Distribution, clientIp: string, hops: Hop[], client: HttpClient): HttpResult {
   const url = u.toString();
   const https = u.protocol === 'https:';
   const own = requestHost === d.domainName;
@@ -215,19 +236,29 @@ function cloudFrontResponse(env: AwsEnv, u: URL, requestHost: string, d: Distrib
       return { url, status: 403, statusText: 'Forbidden', body: CF_ERROR('Bad request.'), headers: headers({}), hops };
     }
     hops.push(hop(`Internet → CloudFront (HTTP)`, [...checks, { label: 'ビューワープロトコルポリシー', ok: true, detail: `Redirect HTTP to HTTPS: 301 → https://${u.host}${u.pathname}` }]));
-    const r = simulateHttp(env, `https://${u.host}${u.pathname}${u.search}`, clientIp);
+    const r = simulateHttp(env, `https://${u.host}${u.pathname}${u.search}`, clientIp, client);
     return { ...r, hops: [...hops, ...r.hops.filter((h) => !h.hop.startsWith('DNS'))] };
   }
   const effects: HttpEffects = {};
   if (d.webAclArn) {
     const acl = env.webAcls.find((a) => a.arn === d.webAclArn);
     if (acl) {
-      const w = evaluateWaf(env, acl, { clientIp, method: 'GET', uri: `${u.pathname}${u.search}`, host: requestHost });
-      effects.waf = { aclArn: acl.arn, sample: { at: Date.now(), clientIp, method: 'GET', uri: `${u.pathname}${u.search}`, host: requestHost, rule: w.rule, action: w.action } };
-      checks.push({ label: `AWS WAF (${acl.name})`, ok: w.action === 'ALLOW', detail: w.rule ? `ルール ${w.rule} に一致 → ${w.action}` : `どのルールにも一致しません → デフォルトアクション ${acl.defaultAction.toUpperCase()}` });
+      const req = { clientIp, method: 'GET', uri: `${u.pathname}${u.search}`, host: requestHost, userAgent: client.userAgent, javascript: client.javascript };
+      const w = evaluateWaf(env, acl, req);
+      effects.waf = { aclArn: acl.arn, sample: toSample(req, w, Date.now()) };
+      const solved = w.solvedChallenge ? `ルール ${w.solvedChallenge} が Challenge を返し、ブラウザが JavaScript でチャレンジを解いてトークン (aws-waf-token) を受け取り、送り直しました → ` : '';
+      const verdict = w.rule ? `ルール ${w.rule}${w.ruleWithinGroup ? ` (${w.ruleWithinGroup})` : ''} に一致 → ${w.action}` : `どのルールにも一致しません → デフォルトアクション ${acl.defaultAction.toUpperCase()}`;
+      const counted = [...w.counted.filter((n) => !w.countedWithinGroup.some((c) => c.rule === n)), ...w.countedWithinGroup.map((c) => `${c.rule} (${c.inner})`)];
+      checks.push({ label: `AWS WAF (${acl.name})`, ok: w.action === 'ALLOW', detail: `${solved}${verdict}${counted.length ? `。カウント: ${counted.join(', ')}` : ''}${w.labels.length ? `。ラベル: ${w.labels.join(', ')}` : ''}` });
       if (w.action === 'BLOCK') {
         hops.push(hop(`Internet → CloudFront (${requestHost})`, checks));
         return { url, status: 403, statusText: 'Forbidden', body: CF_ERROR("Request blocked. We can't connect to the server for this app or website at this time. There might be too much traffic or a configuration error."), headers: headers({ 'X-Cache': 'Error from cloudfront' }), hops, effects };
+      }
+      if (w.action === 'CHALLENGE') {
+        // no valid token and no JavaScript to get one: AWS WAF answers 202 (the interstitial page only for Accept: text/html)
+        checks.push({ label: 'チャレンジ (Challenge)', ok: false, detail: `${client.userAgent} は JavaScript を実行しないので、サイレントチャレンジを解けません。トークンが無いまま 202 が返り、オリジンには届きません` });
+        hops.push(hop(`Internet → CloudFront (${requestHost})`, checks));
+        return { url, status: 202, statusText: 'Accepted', body: '', headers: headers({ 'x-amzn-waf-action': 'challenge', 'cache-control': 'no-store, max-age=0', 'access-control-expose-headers': 'x-amzn-waf-action', 'X-Cache': 'Error from cloudfront' }), hops, effects };
       }
     }
   }
@@ -258,6 +289,12 @@ function cloudFrontResponse(env: AwsEnv, u: URL, requestHost: string, d: Distrib
     const r = lb ? simulateHttp(env, `http://${lb.dnsName}${u.pathname}${u.search}`, clientIp) : undefined;
     hops.push(...(r?.hops ?? [hop('CloudFront → オリジン', [{ label: 'ALB', ok: false, detail: `${lbName} がありません` }])]));
     [status, body] = r?.status !== undefined ? [r.status, r.body] : [502, CF_ERROR('Bad gateway.')];
+    // a flood that gets past the edge drowns the web tier (the same model as CloudWatch's TargetResponseTime)
+    const rt = r?.status === 200 ? originResponseTime(env, lbName, now) : 0;
+    if (rt > OVERLOADED_SECONDS) {
+      hops.push(hop(`${lbName} → ターゲット (過負荷)`, [{ label: 'オリジンの応答', ok: false, detail: `ターゲットの応答時間が平均 ${rt.toFixed(1)} 秒。web サーバーとデータベースが処理しきれないリクエストであふれ、このリクエストは時間内に返ってきませんでした` }]));
+      [status, body] = [504, '504 Gateway Timeout ERROR\nThe request could not be satisfied.\nWe can\'t connect to the server for this app or website at this time. There might be too much traffic or a configuration error. Try again later, or contact the app or website owner.\nGenerated by cloudfront (CloudFront)'];
+    }
   }
   if (status === 200 && d.defaultTtl > 0) effects.cache = { distributionId: d.id, entry: { path, status, body, cachedAt: now } };
   return { url, status, statusText: STATUS_TEXT[status], body, headers: headers({ 'X-Cache': status < 400 ? 'Miss from cloudfront' : 'Error from cloudfront' }), hops, effects };

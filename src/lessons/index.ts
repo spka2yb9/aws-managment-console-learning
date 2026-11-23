@@ -13,6 +13,12 @@ import { lesson33 } from './l33-sqs-lambda';
 import { lesson34 } from './l34-batch';
 import { lesson35, lesson36, lesson37, lesson38 } from './l35-38-edge';
 import { lesson39, lesson40, lesson41 } from './l39-41-cost-org';
+import { lesson42 } from './l42-anti-ddos';
+import { lesson43 } from './l43-guardduty';
+import { lesson44 } from './l44-security-hub';
+import { lesson45 } from './l45-access-analyzer';
+import { lesson46 } from './l46-session-manager';
+import { lesson47 } from './l47-zonal-shift';
 import { lesson10, lesson11, lesson12, lesson13, lesson14, lesson15 } from './l10-15-webapp';
 import { lesson16, lesson17, lesson18, lesson19 } from './l16-19-troubleshooting';
 
@@ -30,6 +36,7 @@ export const COURSES: Course[] = [
   { id: 'containers', title: 'コンテナと非同期処理', description: 'ECR / ECS (Fargate)、SQS と Lambda、EventBridge と AWS Batch', lessons: [lesson32, lesson33, lesson34] },
   { id: 'edge', title: 'エッジ: DNS / 証明書 / CDN / WAF', description: 'Route 53、ACM、CloudFront、AWS WAF で、独自ドメインの HTTPS サイトを届けて守る', lessons: [lesson35, lesson36, lesson37, lesson38] },
   { id: 'advanced', title: '上級: コストとマルチアカウント', description: 'コスト vs 可用性 vs セキュリティのトレードオフ、AWS Organizations と SCP、IAM Identity Center', lessons: [lesson39, lesson40, lesson41] },
+  { id: 'extended', title: '拡張機能: 守りと運用を自動化する', description: '基本の構成に AWS の拡張機能を足す。WAF Anti-DDoS、GuardDuty、Security Hub、IAM Access Analyzer、Session Manager、ARC ゾーンシフト', lessons: [lesson42, lesson43, lesson44, lesson45, lesson46, lesson47] },
 ];
 
 export const ALL_LESSONS: Lesson[] = COURSES.flatMap((c) => c.lessons);

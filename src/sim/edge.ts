@@ -1,7 +1,8 @@
-import { ipInCidr, isValidCidr } from './cidr';
+import { isValidCidr } from './cidr';
 import { trail } from './cloudtrail';
 import { hash, newUuid, randomHex, stableChars } from './ids';
 import { AwsError, type AwsEnv, type Certificate, type DnsRecord, type Distribution, type HostedZone, type IpSet, type WafRule, type WebAcl } from './types';
+import { ANTI_DDOS, evaluateRules, refreshOriginTraffic, validateAntiDdos, type WafRequest, type WafVerdict } from './ext/antiddos';
 
 /**
  * Route 53, ACM, CloudFront and WAF: what happens between the learner's browser and the ALB / S3.
@@ -206,9 +207,11 @@ const pathMatches = (pattern: string, path: string) => (pattern.endsWith('*') ? 
 
 // ---------------- WAF ----------------
 
-export const MANAGED_RULE_GROUPS = [
-  { name: 'AWSManagedRulesCommonRuleSet', label: 'コアルールセット', description: 'XSS やパストラバーサルなど、一般的な攻撃パターンをブロックします。' },
-  { name: 'AWSManagedRulesKnownBadInputsRuleSet', label: '既知の不正な入力', description: 'Log4j (JNDI) など、既知の脆弱性を狙うリクエストをブロックします。' },
+/** capacity = WCU (web ACL capacity units); paid = an add-on with its own fees */
+export const MANAGED_RULE_GROUPS: { name: string; label: string; description: string; capacity: number; paid?: boolean }[] = [
+  { name: 'AWSManagedRulesCommonRuleSet', label: 'コアルールセット', description: 'XSS やパストラバーサルなど、一般的な攻撃パターンをブロックします。', capacity: 700 },
+  { name: 'AWSManagedRulesKnownBadInputsRuleSet', label: '既知の不正な入力', description: 'Log4j (JNDI) など、既知の脆弱性を狙うリクエストをブロックします。', capacity: 200 },
+  { name: ANTI_DDOS, label: 'Anti-DDoS 保護', description: 'リソースのトラフィックのベースラインを学習し、DDoS イベント中のリクエストにラベルを付けて、チャレンジやブロックで処理します。', capacity: 50, paid: true },
 ];
 
 export function createIpSet(env: AwsEnv, input: { name: string; scope: IpSet['scope']; description?: string; addresses: string[] }): string {
@@ -237,32 +240,51 @@ export function createWebAcl(env: AwsEnv, input: { name: string; scope: WebAcl['
   return arn;
 }
 
-export interface WafRequest {
-  clientIp: string;
-  method: string;
-  uri: string;
-  host: string;
+export type { WafRequest, WafVerdict };
+
+/** first matching rule by priority (Count rules only count); otherwise the default action. See ext/antiddos.ts */
+export function evaluateWaf(env: AwsEnv, acl: WebAcl, req: WafRequest, now = Date.now()): WafVerdict {
+  return evaluateRules(env, acl.rules, acl.defaultAction, req, now);
 }
 
-/** first matching rule by priority (Count rules only count); otherwise the default action */
-export function evaluateWaf(env: AwsEnv, acl: WebAcl, req: WafRequest): { action: 'ALLOW' | 'BLOCK'; rule?: string; counted: string[] } {
-  const counted: string[] = [];
-  const u = decodeURIComponent(req.uri).toLowerCase();
-  for (const r of acl.rules) {
+const wafInvalid = (field: string, parameter: string, reason = 'The parameter contains formatting that is not valid.') => new AwsError('WAFInvalidParameterException', `Error reason: ${reason}, field: ${field}, parameter: ${parameter}`);
+
+/** UpdateWebACL: replaces every rule (and the default action). The old rules are kept as a revision for the traffic history. */
+export function updateWebAcl(env: AwsEnv, arn: string, input: { rules: WafRule[]; defaultAction?: WebAcl['defaultAction'] }, now = Date.now()) {
+  const acl = env.webAcls.find((a) => a.arn === arn);
+  if (!acl) throw new AwsError('WAFNonexistentItemException', 'AWS WAF couldn’t perform the operation because your resource doesn’t exist.');
+  const names = new Set<string>();
+  const priorities = new Set<number>();
+  for (const r of input.rules) {
+    if (!/^[\w-]{1,128}$/.test(r.name)) throw wafInvalid('RULE_NAME', r.name || '(empty)');
+    if (names.has(r.name)) throw wafInvalid('RULE', r.name, 'Duplicate value.');
+    if (!Number.isInteger(r.priority) || r.priority < 0) throw wafInvalid('RULE_PRIORITY', String(r.priority));
+    if (priorities.has(r.priority)) throw wafInvalid('RULE_PRIORITY', String(r.priority), 'Duplicate value.');
+    names.add(r.name);
+    priorities.add(r.priority);
     const s = r.statement;
-    const match =
-      s.kind === 'ip-set'
-        ? !!env.ipSets.find((x) => x.arn === s.ipSetArn)?.addresses.some((cidr) => ipInCidr(req.clientIp, cidr))
-        : s.kind === 'uri-starts-with'
-          ? req.uri.startsWith(s.value)
-          : s.name === 'AWSManagedRulesCommonRuleSet'
-            ? /<script|\.\.\/|%3cscript/.test(u)
-            : /\/\.git|jndi:|\/\.env/.test(u);
-    if (!match) continue;
-    if (r.action === 'Count') counted.push(r.name);
-    else return { action: r.action === 'Block' ? 'BLOCK' : 'ALLOW', rule: r.name, counted };
+    if (s.kind === 'ip-set' && !env.ipSets.some((x) => x.arn === s.ipSetArn)) throw new AwsError('WAFNonexistentItemException', 'AWS WAF couldn’t perform the operation because your resource doesn’t exist.');
+    if (s.kind === 'rate-based' && (!Number.isInteger(s.limit) || s.limit < 10 || s.limit > 2_000_000_000)) throw wafInvalid('RATE_BASED_LIMIT', String(s.limit));
+    if (s.kind === 'rate-based' && ![60, 120, 300, 600].includes(s.windowSec)) throw wafInvalid('EVALUATION_WINDOW_SEC', String(s.windowSec));
+    if (s.kind === 'managed') {
+      if (s.vendor !== 'AWS' || !MANAGED_RULE_GROUPS.some((g) => g.name === s.name)) throw new AwsError('WAFNonexistentItemException', 'AWS WAF couldn’t perform the operation because your resource doesn’t exist.');
+      if (s.name === ANTI_DDOS) validateAntiDdos(s.antiDdos, s.ruleActionOverrides);
+      else if (s.antiDdos) throw wafInvalid('MANAGED_RULE_GROUP_CONFIG', s.name, 'The managed rule group config is not supported by this rule group.');
+    }
   }
-  return { action: acl.defaultAction === 'Block' ? 'BLOCK' : 'ALLOW', counted };
+  if (input.rules.some((r) => r.action === 'Allow' && r.statement.kind === 'managed')) throw wafInvalid('OVERRIDE_ACTION', 'Allow', 'A rule group reference can only use the override action None or Count.');
+  acl.revisions = [...(acl.revisions ?? [{ at: 0, rules: acl.rules }]), { at: now, rules: structuredClone(input.rules) }];
+  acl.rules = [...input.rules].sort((a, b) => a.priority - b.priority);
+  if (input.defaultAction) acl.defaultAction = input.defaultAction;
+  refreshOriginTraffic(env, now);
+  trail(env, {
+    source: 'wafv2',
+    name: 'UpdateWebACL',
+    region: 'us-east-1',
+    resources: [['AWS::WAFv2::WebACL', arn]],
+    request: { name: acl.name, scope: acl.scope, id: arn.split('/').pop(), defaultAction: { [acl.defaultAction.toLowerCase()]: {} }, rules: acl.rules.map((r) => ({ name: r.name, priority: r.priority })) },
+    response: { nextLockToken: newUuid() },
+  });
 }
 
 export function recordWafSample(env: AwsEnv, aclArn: string, sample: WebAcl['samples'][number]) {

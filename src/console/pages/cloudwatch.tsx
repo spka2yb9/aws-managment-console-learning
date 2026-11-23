@@ -100,7 +100,12 @@ const NAMESPACES = [
   { ns: 'AWS/ApplicationELB', label: 'ApplicationELB', group: 'LoadBalancer 別メトリクス', column: 'LoadBalancer 名' },
   { ns: 'AWS/RDS', label: 'RDS', group: 'データベース別メトリクス', column: 'DB インスタンス' },
   { ns: 'AWS/AutoScaling', label: 'AutoScaling', group: 'グループメトリクス', column: 'Auto Scaling グループ' },
+  // per-AZ ALB metrics (lesson 47): the ns query parameter is this group key
+  { ns: 'AWS/ApplicationELB:AZ', label: 'ApplicationELB', group: 'AppELB 別、AZ 別メトリクス', column: 'LoadBalancer 名' },
 ];
+/** the metric browser group of a metric: its namespace, or namespace:AZ for per-AZ metrics */
+const groupOf = (m: MetricRef) => (m.dimensions.some((d) => d.name === 'AvailabilityZone') ? `${m.namespace}:AZ` : m.namespace);
+const azOf = (m: MetricRef) => m.dimensions.find((d) => d.name === 'AvailabilityZone')?.value;
 
 export const metricsPath = (refs: MetricRef[], ns?: string) => `/cloudwatch/metrics?${new URLSearchParams({ ...(ns ? { ns } : {}), graph: encodeGraph(refs) })}`;
 
@@ -110,7 +115,7 @@ function resourceName(env: AwsEnv, ref: MetricRef): string {
   if (ref.namespace === 'AWS/ApplicationELB') return v.split('/')[1] ?? v;
   return v;
 }
-const seriesLabel = (env: AwsEnv, ref: MetricRef) => `${resourceName(env, ref)} ${ref.metricName}`;
+const seriesLabel = (env: AwsEnv, ref: MetricRef) => `${resourceName(env, ref)}${azOf(ref) ? ` ${azOf(ref)}` : ''} ${ref.metricName}`;
 
 // ---------------- the モニタリング tab of EC2 / ALB / RDS ----------------
 
@@ -288,7 +293,7 @@ export function AlarmDetail({ name }: { name: string }) {
           { label: '説明', value: a.alarmDescription },
           { label: '名前空間', value: a.namespace },
           { label: 'メトリクス名', value: a.metricName },
-          { label: a.dimensions[0]?.name ?? 'ディメンション', value: a.dimensions[0]?.value },
+          ...(a.dimensions.length ? a.dimensions : [{ name: 'ディメンション', value: '' }]).map((d) => ({ label: d.name, value: d.value })),
           { label: '統計', value: statLabel(a.statistic) },
           { label: '期間', value: periodLabel(a.period) },
           { label: '欠落データの処理', value: '欠落データを見つかりませんとして処理' },
@@ -342,7 +347,7 @@ export function CreateAlarm({ edit }: { edit?: string }) {
   const ref = decodeGraph(metricKey)[0];
   const info = ref && metricInfo(ref);
   const err = problem ?? errorText(error);
-  const option = (m: (typeof metrics)[number]) => ({ value: encodeGraph([m]), label: `${m.resourceName || m.dimensions[0].value} ${m.metricName}`, description: `${m.namespace} · ${m.dimensions[0].name} = ${m.dimensions[0].value}` });
+  const option = (m: (typeof metrics)[number]) => ({ value: encodeGraph([m]), label: `${m.resourceName || m.dimensions[0].value}${azOf(m) ? ` ${azOf(m)}` : ''} ${m.metricName}`, description: `${m.namespace} · ${m.dimensions.map((d) => `${d.name} = ${d.value}`).join(' · ')}` });
   const selected = ref && metrics.find((m) => sameMetric(m, ref));
   const r = range('3h');
   const preview = ref && (
@@ -390,7 +395,7 @@ export function CreateAlarm({ edit }: { edit?: string }) {
                         selectedOption={selected ? option(selected) : null}
                         placeholder="メトリクスの選択"
                         filteringType="auto"
-                        options={NAMESPACES.map((n) => ({ label: `${n.label} > ${n.group}`, options: metrics.filter((m) => m.namespace === n.ns).map(option) }))}
+                        options={NAMESPACES.map((n) => ({ label: `${n.label} > ${n.group}`, options: metrics.filter((m) => groupOf(m) === n.ns).map(option) })).filter((g) => g.options.length || !g.label.includes('AZ'))}
                         onChange={(e) => {
                           const m = decodeGraph(e.detail.selectedOption.value)[0];
                           setMetricKey(e.detail.selectedOption.value!);
@@ -405,7 +410,7 @@ export function CreateAlarm({ edit }: { edit?: string }) {
                         <ColumnLayout columns={3} variant="text-grid">
                           <div><Box variant="awsui-key-label">名前空間</Box>{ref.namespace}</div>
                           <div><Box variant="awsui-key-label">メトリクス名</Box>{ref.metricName}</div>
-                          <div><Box variant="awsui-key-label">{ref.dimensions[0].name}</Box>{ref.dimensions[0].value}</div>
+                          {ref.dimensions.map((d) => <div key={d.name}><Box variant="awsui-key-label">{d.name}</Box>{d.value}</div>)}
                         </ColumnLayout>
                         <ColumnLayout columns={2}>
                           <FormField label="統計">
@@ -574,16 +579,17 @@ export function MetricsPage() {
                   title={`${nsInfo.label} > ${nsInfo.group}`}
                   headerVariant="h2"
                   variant="container"
-                  items={all.filter((m) => m.namespace === ns)}
+                  items={all.filter((m) => groupOf(m) === ns)}
                   trackBy={encodeGraph1}
                   selectionType="multi"
                   selectedItems={all.filter((m) => graph.some((g) => sameMetric(g, m)))}
-                  onSelectionChange={(items) => setGraph([...graph.filter((g) => g.namespace !== ns), ...items])}
+                  onSelectionChange={(items) => setGraph([...graph.filter((g) => groupOf(g) !== ns), ...items])}
                   resourceName="メトリクス"
                   testId="metric-table"
                   columns={[
                     { id: 'resource', header: nsInfo.column, cell: (m) => m.resourceName || '-', value: (m) => m.resourceName },
-                    { id: 'dim', header: all.find((m) => m.namespace === ns)?.dimensions[0].name ?? 'ディメンション', cell: (m) => m.dimensions[0].value, value: (m) => m.dimensions[0].value },
+                    { id: 'dim', header: all.find((m) => groupOf(m) === ns)?.dimensions[0].name ?? 'ディメンション', cell: (m) => m.dimensions[0].value, value: (m) => m.dimensions[0].value },
+                    ...(nsInfo.ns.endsWith(':AZ') ? [{ id: 'az', header: 'AvailabilityZone', cell: (m: Row) => azOf(m), value: (m: Row) => azOf(m) ?? '' }] : []),
                     { id: 'metric', header: 'メトリクス名', cell: (m) => m.metricName, value: (m) => m.metricName },
                   ]}
                 />
@@ -591,10 +597,10 @@ export function MetricsPage() {
             ) : (
               <Container header={<Header variant="h2" counter={`(${all.length})`}>AWS 名前空間</Header>}>
                 <ColumnLayout columns={3}>
-                  {NAMESPACES.map((n) => (
+                  {NAMESPACES.filter((n) => !n.ns.endsWith(':AZ') || all.some((m) => groupOf(m) === n.ns)).map((n) => (
                     <div key={n.ns}>
                       <ConsoleLink to={metricsPath(graph, n.ns)}>{n.label}</ConsoleLink>
-                      <Box variant="small" color="text-body-secondary">{`${all.filter((m) => m.namespace === n.ns).length} 個のメトリクス`}</Box>
+                      <Box variant="small" color="text-body-secondary">{`${n.ns.endsWith(':AZ') ? `${n.group}: ` : ''}${all.filter((m) => groupOf(m) === n.ns).length} 個のメトリクス`}</Box>
                     </div>
                   ))}
                 </ColumnLayout>
@@ -611,7 +617,7 @@ export function MetricsPage() {
                 empty="グラフ化したメトリクスはありません"
                 columnDefinitions={[
                   { id: 'label', header: 'ラベル', cell: (g) => seriesLabel(env, g) },
-                  { id: 'details', header: '詳細', cell: (g) => `${g.namespace} • ${g.metricName} • ${g.dimensions[0].name}: ${g.dimensions[0].value}` },
+                  { id: 'details', header: '詳細', cell: (g) => `${g.namespace} • ${g.metricName} • ${g.dimensions.map((d) => `${d.name}: ${d.value}`).join(' • ')}` },
                   { id: 'stat', header: '統計', cell: (g) => statLabel(stat === 'default' ? (metricInfo(g)?.stat ?? 'Average') : stat) },
                   { id: 'period', header: '期間', cell: () => periodLabel(period || r.period) },
                   {

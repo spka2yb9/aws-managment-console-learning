@@ -48,6 +48,9 @@ export interface ExerciseTask {
   hint: string;
   /** Cloudscape Hotspot id placed in the console UI; shows an annotation next to it for this task. */
   hotspotId?: string;
+  /** CLI lessons: an example command that completes the task (revealed on request, can be typed into the terminal).
+   * A function can fill in ids from the current environment. Tests replay these as the model solution. */
+  command?: string | ((ctx: TaskContext) => string);
   /** Once true the task stays done (sticky), so navigating away doesn't un-check it. */
   done: (ctx: TaskContext) => boolean;
 }

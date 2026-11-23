@@ -28,6 +28,8 @@ import { pick, sgOption, vpcOption } from '../options';
 import { useConsole } from '../store';
 import { ActionMenu, ConsoleLink, CopyableValue, DeleteModal, EditForm, errorText, formatDate, NotFound, ResourceDetail, ResourceStatus, ResourceTable, ResourceTabs, nameCell, useEnv, useNavigate, useSelection } from '../ui';
 import { MonitoringCharts } from './cloudwatch';
+import { adminOverride, LbAttributesTab, LbIntegrationsTab } from './arc';
+import { zonalShiftEnabled } from '../../sim/ext/zonalshift';
 
 // Tokyo ALB canonical hosted zone id (what Route 53 alias records point at).
 const HOSTED_ZONE: Record<string, string> = { 'ap-northeast-1': 'Z14GRHDCWA56QT', 'us-east-1': 'Z35SXDOTRQ7X7K' };
@@ -245,7 +247,7 @@ export function LbDetail({ name }: { name: string }) {
   const vpc = env.vpcs.find((v) => v.vpcId === lb.vpcId);
   return (
     <SpaceBetween size="l">
-      <Header variant="h1" actions={<ActionMenu items={[{ id: 'sg', text: 'セキュリティグループを編集', onClick: () => navigate(`${lbPath(lb)}/edit-security-groups`) }]} />}>{lb.loadBalancerName}</Header>
+      <Header variant="h1" actions={<ActionMenu items={[{ id: 'sg', text: 'セキュリティグループを編集', onClick: () => navigate(`${lbPath(lb)}/edit-security-groups`) }, { id: 'attributes', text: 'ロードバランサー属性を編集', onClick: () => navigate(`${lbPath(lb)}/edit-attributes`) }]} />}>{lb.loadBalancerName}</Header>
       <ResourceDetail
         fields={[
           { label: 'ロードバランサーのタイプ', value: 'Application' },
@@ -338,6 +340,9 @@ export function LbDetail({ name }: { name: string }) {
             ),
           },
           { id: 'monitoring', label: 'モニタリング', content: <MonitoringCharts columns={3} metrics={['TargetResponseTime', 'RequestCount', 'HTTPCode_Target_5XX_Count'].map((m) => metricFor('AWS/ApplicationELB', m, lbDimension(lb)))} /> },
+          // Route 53 ARC zonal shift (arc.tsx)
+          { id: 'integrations', label: '統合', content: <LbIntegrationsTab lb={lb} /> },
+          { id: 'attributes', label: '属性', content: <LbAttributesTab lb={lb} /> },
         ]}
       />
     </SpaceBetween>
@@ -501,6 +506,7 @@ export function TgDetail({ name }: { name: string }) {
                     { id: 'name', header: '名前', cell: (t) => (tg.targetType === 'ip' ? backendOf(env, tg, t)?.name : nameOf(env.instances.find((i) => i.instanceId === t.id) ?? { tags: [] })) || '-' },
                     { id: 'port', header: 'ポート', cell: (t) => t.port },
                     { id: 'zone', header: 'ゾーン', cell: (t) => backendOf(env, tg, t)?.availabilityZone ?? '-' },
+                    ...(lb && zonalShiftEnabled(lb) ? [{ id: 'override', header: '管理オーバーライド', cell: (t: RegisteredTarget) => adminOverride(env, lb, backendOf(env, tg, t)?.availabilityZone) }] : []),
                     { id: 'health', header: 'ヘルスステータス', cell: (t) => <ResourceStatus state={targetHealth(env, tg.targetGroupArn, t).state} /> },
                     { id: 'details', header: 'ヘルスステータスの詳細', cell: (t) => { const h = targetHealth(env, tg.targetGroupArn, t); return h.description ? `${h.description}` : '-'; } },
                   ]}

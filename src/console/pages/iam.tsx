@@ -22,6 +22,7 @@ import type { AwsError, IamRole, ManagedPolicy, PolicyDocument } from '../../sim
 import { useConsole } from '../store';
 import { ConsoleLink, CopyableValue, EditForm, errorText, formatDate, JsonBlock, NotFound, queryParam, ResourceDetail, ResourceTable, ResourceTabs, useGlobalEnv, useNavigate } from '../ui';
 import { Tags } from './vpc';
+import { RevokeSessions } from './guardduty';
 
 const rolePath = (n: string) => `/iam/roles/${n}`;
 const userPath = (n: string) => `/iam/users/${n}`;
@@ -250,6 +251,7 @@ export function RoleDetail({ name }: { name: string }) {
             ),
           },
           { id: 'tags', label: 'タグ', content: <Tags tags={r.tags} /> },
+          { id: 'revoke', label: 'セッションを取り消す', content: <RevokeSessions name={name} /> },
         ]}
       />
     </SpaceBetween>

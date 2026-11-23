@@ -611,7 +611,8 @@ export function LoadTestPanel() {
   const run = useConsole((s) => s.run);
   const now = useNow(5000);
   const g = env.autoScalingGroups[0];
-  const current = env.traffic?.[env.traffic.length - 1]?.rps;
+  // the record in effect now (the CLI's hey also schedules the end of its run)
+  const current = [...(env.traffic ?? [])].reverse().find((x) => x.at <= now)?.rps;
   const selected = LOADS.find((l) => l.rps === current)?.id ?? 'normal';
   const start = now - 5 * 60_000;
   const series = loadTestSeries(env, g, start, now, 5000);

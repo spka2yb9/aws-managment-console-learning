@@ -35,6 +35,8 @@ export function cidrSize(cidr: string): number {
 }
 
 export function ipInCidr(ip: string, cidr: string): boolean {
+  // IP の無い相手 (終了したインスタンス、停止したタスク) はどの CIDR にも入らない
+  if (!isValidIp(ip)) return false;
   const [s, e] = range(cidr);
   const n = toInt(ip);
   return n >= s && n <= e;

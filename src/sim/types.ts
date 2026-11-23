@@ -1,3 +1,8 @@
+import type { AccessAnalyzerState } from './ext/accessanalyzer';
+import type { GuardDutyState } from './ext/guardduty';
+import type { SecurityHubState } from './ext/securityhub';
+import type { SsmState } from './ext/ssm';
+import type { ZonalShiftState } from './ext/zonalshift';
 // Domain model of the simulated AWS account. Field names follow the EC2 / ELBv2 / RDS API shapes
 // (camelCased) so what learners see in the console matches what they will later see in the CLI/SDK.
 // The whole AwsEnv is plain JSON: it is structuredClone'd on every mutation and persisted to IndexedDB.
@@ -55,13 +60,22 @@ export interface NatGateway extends Tagged {
   createTime: number;
 }
 
-/** Gateway endpoint (S3): route tables send S3 traffic to it instead of the NAT gateway / IGW. */
+/**
+ * Gateway endpoint (S3): route tables send S3 traffic to it instead of the NAT gateway / IGW.
+ * Interface endpoint (ssm, logs ...): a network interface per subnet; with private DNS the service's
+ * regional name resolves to those private IPs inside the VPC, and its security groups decide who gets in.
+ */
 export interface VpcEndpoint extends Tagged {
   vpcEndpointId: string;
   vpcId: string;
   serviceName: string;
-  type: 'Gateway';
+  type: 'Gateway' | 'Interface';
+  /** Gateway only ([] for Interface) */
   routeTableIds: string[];
+  /** Interface only: one network interface per subnet (at most one subnet per AZ) */
+  networkInterfaces?: { networkInterfaceId: string; subnetId: string; privateIp: string }[];
+  securityGroupIds?: string[];
+  privateDnsEnabled?: boolean;
   state: 'available';
   createdAt: number;
 }
@@ -178,6 +192,8 @@ export interface Instance extends Tagged {
   homeFiles?: Record<string, string>;
   /** detailed monitoring: 1-minute CloudWatch metrics instead of 5-minute */
   detailedMonitoring?: boolean;
+  /** instance metadata service (IMDS) options; undefined = IMDSv1 allowed (optional, hop limit 1, enabled) */
+  metadataOptions?: { httpTokens: 'optional' | 'required'; httpPutResponseHopLimit: number; httpEndpoint: 'enabled' | 'disabled' };
 }
 
 export interface Listener {
@@ -204,6 +220,8 @@ export interface LoadBalancer {
   nodeIps: Record<string, string>;
   securityGroupIds: string[];
   listeners: Listener[];
+  /** load balancer attributes changed from the defaults (ModifyLoadBalancerAttributes), e.g. zonal_shift.config.enabled = 'true' */
+  attributes?: Record<string, string>;
 }
 
 export interface HealthCheck {
@@ -364,6 +382,12 @@ export interface AwsEnv {
   dataFlows: DataFlow[];
   /** AWS Budgets: a monthly cost budget */
   budgets: { budgetName: string; limitUsd: number }[];
+  /* ---- 拡張機能のコース (lessons 42-47)。古いセッションには無いので optional ---- */
+  guardDuty?: GuardDutyState;
+  securityHub?: SecurityHubState;
+  accessAnalyzer?: AccessAnalyzerState;
+  ssm?: SsmState;
+  zonalShift?: ZonalShiftState;
   /** AWS Organizations, seen from the management account (this env's account) */
   organization?: Organization;
   identityCenter?: IdentityCenter;
@@ -503,11 +527,51 @@ export interface Distribution {
   lastModified: number;
 }
 
+export type WafSensitivity = 'LOW' | 'MEDIUM' | 'HIGH';
+
+/** ManagedRuleGroupConfigs: AWSManagedRulesAntiDDoSRuleSet (lesson 42) */
+export interface AntiDdosConfig {
+  sensitivityToBlock: WafSensitivity;
+  /** ClientSideActionConfig.Challenge */
+  challenge: { usage: 'ENABLED' | 'DISABLED'; sensitivity: WafSensitivity; exemptUriRegex: string[] };
+}
+
+/** RuleActionOverrides of a managed rule group: the action a rule inside the group uses instead of its own */
+export interface RuleActionOverride {
+  name: string;
+  action: 'Allow' | 'Block' | 'Count' | 'Challenge';
+}
+
 export interface WafRule {
   name: string;
   priority: number;
+  /** a rule group's rule: Count = OverrideAction Count (the group's result is only counted), otherwise None */
   action: 'Block' | 'Allow' | 'Count';
-  statement: { kind: 'ip-set'; ipSetArn: string } | { kind: 'managed'; vendor: 'AWS'; name: string } | { kind: 'uri-starts-with'; value: string };
+  statement:
+    | { kind: 'ip-set'; ipSetArn: string }
+    | { kind: 'managed'; vendor: 'AWS'; name: string; antiDdos?: AntiDdosConfig; ruleActionOverrides?: RuleActionOverride[] }
+    | { kind: 'uri-starts-with'; value: string }
+    /** RateBasedStatement, AggregateKeyType IP: more than `limit` requests from one IP within `windowSec` */
+    | { kind: 'rate-based'; limit: number; windowSec: number };
+  /** VisibilityConfig.MetricName (default: the rule name) */
+  metricName?: string;
+}
+
+/** a sampled request. rule = the web ACL rule that decided it (or counted it); none = the default action */
+export interface WafSample {
+  at: number;
+  clientIp: string;
+  method: string;
+  uri: string;
+  host: string;
+  rule?: string;
+  action: 'ALLOW' | 'BLOCK' | 'COUNT' | 'CHALLENGE';
+  ruleWithinGroup?: string;
+  /** COUNT by a rule action override: the action the rule is configured with (CHALLENGE / BLOCK) */
+  overriddenAction?: string;
+  labels?: string[];
+  userAgent?: string;
+  country?: string;
 }
 
 export interface WebAcl {
@@ -517,7 +581,9 @@ export interface WebAcl {
   defaultAction: 'Allow' | 'Block';
   rules: WafRule[];
   /** the last requests it saw (the console's "sampled requests") */
-  samples: { at: number; clientIp: string; method: string; uri: string; host: string; rule?: string; action: 'ALLOW' | 'BLOCK' | 'COUNT' }[];
+  samples: WafSample[];
+  /** the rules in effect from `at` (oldest first; kept from the first update) so past traffic is judged by the rules of its time */
+  revisions?: { at: number; rules: WafRule[] }[];
 }
 
 export interface IpSet {
@@ -825,6 +891,25 @@ export interface TrafficSetting {
   at: number;
   /** requests per second; undefined = back to the normal daily traffic */
   rps?: number;
+  /** who sends the requests (lesson 42): the edge (CloudFront + WAF) sees all of them, `rps` is what gets through to the web tier */
+  sources?: TrafficSource[];
+}
+
+/** one kind of client hitting the site (shoppers, the smartphone app, a botnet) */
+export interface TrafficSource {
+  name: string;
+  /** the block its IPs come from, and how many distinct IPs send */
+  cidr: string;
+  ips: number;
+  /** requests per second, all IPs together */
+  rps: number;
+  paths: string[];
+  userAgent: string;
+  /** runs JavaScript, so it answers a WAF silent challenge (a browser; not curl, an app's HTTP client or a simple bot) */
+  javascript: boolean;
+  /** attack traffic: share of the requests per Anti-DDoS suspicion level */
+  suspicion?: Partial<Record<'high' | 'medium' | 'low', number>>;
+  country: string[];
 }
 
 // ---------------- CloudTrail / Config ----------------

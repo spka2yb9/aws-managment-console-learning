@@ -121,7 +121,8 @@ export function parsePolicy(text: string, kind: PolicyKind, opts: { bucket?: str
     if (kind !== 'trust' && !list(st.Resource).length && !list(st.NotResource).length) throw new AwsError(code, 'Policy statement must contain resources.');
     if (kind === 'resource' && opts.bucket)
       for (const r of [...list(st.Resource), ...list(st.NotResource)])
-        if (!matchWildcard(r, `arn:aws:s3:::${opts.bucket}`, false) && !matchWildcard(r, `arn:aws:s3:::${opts.bucket}/x`, false)) throw new AwsError(code, 'Policy has invalid resource');
+        // the bucket itself or anything under it (arn:aws:s3:::bucket/prefix/*)
+        if (!r.startsWith(`arn:aws:s3:::${opts.bucket}/`) && !matchWildcard(r, `arn:aws:s3:::${opts.bucket}`, false) && !matchWildcard(r, `arn:aws:s3:::${opts.bucket}/x`, false)) throw new AwsError(code, 'Policy has invalid resource');
   }
   return d;
 }

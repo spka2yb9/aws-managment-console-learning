@@ -30,6 +30,10 @@ export const SERVICES: ServiceInfo[] = [
   { id: 'billing', name: '請求とコスト管理', description: 'コストの確認と予算の管理', home: '/billing/home' },
   { id: 'organizations', name: 'AWS Organizations', description: '複数の AWS アカウントを一元管理', home: '/organizations/accounts' },
   { id: 'sso', name: 'IAM Identity Center', description: '複数の AWS アカウントへのワークフォースアクセスを管理', home: '/sso/home' },
+  { id: 'guardduty', name: 'GuardDuty', description: 'インテリジェントな脅威検出で AWS アカウントとワークロードを保護', home: '/guardduty/home' },
+  { id: 'securityhub', name: 'Security Hub', description: 'セキュリティの検出結果を集約し、セキュリティ体制を自動でチェック', home: '/securityhub/home' },
+  { id: 'ssm', name: 'Systems Manager', description: 'AWS とハイブリッド環境のノードを一元管理', home: '/ssm/session-manager' },
+  { id: 'arc', name: 'Application Recovery Controller', description: 'アベイラビリティーゾーンやリージョンの障害から復旧', home: '/arc/zonal-shift' },
 ];
 
 /** Features ("sub-pages") indexed by the unified search, like the real console search results. */
@@ -77,6 +81,13 @@ export const FEATURES = [
   { name: 'コストと予算', en: 'Billing Cost Explorer Budgets cost', service: '請求とコスト管理', path: '/billing/home' },
   { name: 'AWS アカウント', en: 'Organizations accounts OU', service: 'AWS Organizations', path: '/organizations/accounts' },
   { name: 'サービスコントロールポリシー', en: 'Organizations SCP service control policies', service: 'AWS Organizations', path: '/organizations/policies' },
+  { name: '検出結果', en: 'GuardDuty findings threat detection', service: 'GuardDuty', path: '/guardduty/findings' },
+  { name: '検出結果', en: 'Security Hub findings CSPM', service: 'Security Hub', path: '/securityhub/findings' },
+  { name: 'セキュリティ標準', en: 'Security Hub standards FSBP controls', service: 'Security Hub', path: '/securityhub/standards' },
+  { name: 'Access Analyzer', en: 'IAM Access Analyzer external access unused access findings', service: 'IAM', path: '/iam/access-analyzer/findings' },
+  { name: 'セッションマネージャー', en: 'Session Manager SSM start session', service: 'Systems Manager', path: '/ssm/session-manager' },
+  { name: 'フリートマネージャー', en: 'Fleet Manager managed nodes SSM', service: 'Systems Manager', path: '/ssm/fleet-manager' },
+  { name: 'ゾーンシフト', en: 'Zonal shift autoshift ARC', service: 'Application Recovery Controller', path: '/arc/zonal-shift' },
   { name: '許可セット', en: 'Identity Center permission sets SSO', service: 'IAM Identity Center', path: '/sso/permission-sets' },
   { name: 'AWS アカウント (割り当て)', en: 'Identity Center accounts assignments SSO', service: 'IAM Identity Center', path: '/sso/accounts' },
   { name: 'AWS アクセスポータル', en: 'Identity Center access portal SSO', service: 'IAM Identity Center', path: '/sso/portal' },
@@ -120,6 +131,7 @@ export const SIDE_NAV: Record<Exclude<ServiceId, 'console'>, { header: SideNavig
     items: [
       link('ダッシュボード', '/iam/home'),
       { type: 'section', text: 'アクセス管理', items: [link('ユーザー', '/iam/users'), link('ロール', '/iam/roles'), link('ポリシー', '/iam/policies')] },
+      { type: 'section', text: 'アクセスレポート', items: [link('リソース分析', '/iam/access-analyzer/findings'), link('未使用のアクセス', '/iam/access-analyzer/unused'), link('アナライザーの設定', '/iam/access-analyzer/analyzers')] },
       { type: 'section', text: 'ツール', items: [link('ポリシーシミュレーター', '/iam/simulator')] },
     ],
   },
@@ -195,6 +207,22 @@ export const SIDE_NAV: Record<Exclude<ServiceId, 'console'>, { header: SideNavig
   config: {
     header: { text: 'AWS Config', href: '/config/home' },
     items: [link('ダッシュボード', '/config/home'), link('ルール', '/config/rules'), link('リソース', '/config/resources')],
+  },
+  guardduty: {
+    header: { text: 'GuardDuty', href: '/guardduty/home' },
+    items: [link('概要', '/guardduty/home'), link('検出結果', '/guardduty/findings'), { type: 'section', text: '設定', items: [link('設定', '/guardduty/settings'), link('抑制ルール', '/guardduty/suppression-rules')] }],
+  },
+  securityhub: {
+    header: { text: 'Security Hub CSPM', href: '/securityhub/home' },
+    items: [link('概要', '/securityhub/home'), link('検出結果', '/securityhub/findings'), link('セキュリティ標準', '/securityhub/standards'), link('コントロール', '/securityhub/controls'), link('オートメーション', '/securityhub/automations')],
+  },
+  ssm: {
+    header: { text: 'AWS Systems Manager', href: '/ssm/session-manager' },
+    items: [{ type: 'section', text: 'ノードツール', items: [link('フリートマネージャー', '/ssm/fleet-manager'), link('セッションマネージャー', '/ssm/session-manager')] }],
+  },
+  arc: {
+    header: { text: 'Application Recovery Controller', href: '/arc/zonal-shift' },
+    items: [{ type: 'section', text: 'マルチ AZ', items: [link('ゾーンシフト', '/arc/zonal-shift'), link('ゾーンオートシフト', '/arc/zonal-autoshift')] }],
   },
 };
 

@@ -18,13 +18,15 @@ import { eicConnectivity } from '../../sim/network';
 import { setInstanceProfile } from '../../sim/iam';
 import type { AwsError } from '../../sim/types';
 import { useConsole } from '../store';
-import { ConsoleLink, CopyableValue, EditForm, NotFound, useEnv, useNavigate } from '../ui';
+import { ConsoleLink, CopyableValue, EditForm, NotFound, queryParam, useEnv, useNavigate } from '../ui';
+import { SessionManagerConnect } from './ssm';
 
 export function ConnectInstance({ id }: { id: string }) {
   const env = useEnv();
   const navigate = useNavigate();
   const i = env.instances.find((x) => x.instanceId === id);
-  const [tab, setTab] = useState('eic');
+  // the tab is kept in the path (?tab=ssm) so lessons can tell which connection method was opened
+  const [tab, setTab] = useState(() => queryParam(useConsole.getState().path, 'tab') ?? 'eic');
   if (!i) return <NotFound what="インスタンス" id={id} />;
   const problem = i.state !== 'running' ? 'インスタンスが実行中ではありません。' : !i.publicIpAddress ? 'インスタンスにパブリック IPv4 アドレスがないため、EC2 Instance Connect (パブリック) で接続できません。' : null;
   return (
@@ -32,7 +34,10 @@ export function ConnectInstance({ id }: { id: string }) {
       <Header variant="h1" description={`次のいずれかのオプションを使用して、インスタンス ${i.instanceId} に接続します`}>インスタンスに接続</Header>
       <Tabs
         activeTabId={tab}
-        onChange={(e) => setTab(e.detail.activeTabId)}
+        onChange={(e) => {
+          setTab(e.detail.activeTabId);
+          navigate(`/ec2/instances/${id}/connect?tab=${e.detail.activeTabId}`);
+        }}
         tabs={[
           {
             id: 'eic',
@@ -59,7 +64,7 @@ export function ConnectInstance({ id }: { id: string }) {
               </Container>
             ),
           },
-          { id: 'ssm', label: 'セッションマネージャー', content: <Container><Box color="text-body-secondary">このシミュレーターでは未提供です。</Box></Container> },
+          { id: 'ssm', label: 'セッションマネージャー', content: <SessionManagerConnect id={id} /> },
           {
             id: 'ssh',
             label: 'SSH クライアント',

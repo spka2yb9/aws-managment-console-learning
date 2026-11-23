@@ -13,10 +13,15 @@ import { CONTAINER_ROUTES } from './pages/containers-routes';
 import { EDGE_ROUTES } from './pages/edge-routes';
 import { BillingHome } from './pages/billing';
 import { ORG_ROUTES } from './pages/org-routes';
+import { ACCESS_ANALYZER_ROUTES } from './pages/access-analyzer-routes';
+import { ARC_ROUTES } from './pages/arc-routes';
+import { GUARDDUTY_ROUTES } from './pages/guardduty-routes';
+import { SECURITYHUB_ROUTES } from './pages/securityhub-routes';
+import { SSM_ROUTES } from './pages/ssm-routes';
 import { CreateEndpoint, CreateNat, EndpointList, NatDetail, NatList } from './pages/vpc-nat';
 import { CreateNacl, EditNaclRules, EditNaclSubnetAssociations, EditSubnetNaclAssociation, NaclDetail, NaclList } from './pages/nacl';
 
-export type ServiceId = 'console' | 'vpc' | 'ec2' | 'rds' | 's3' | 'iam' | 'cloudwatch' | 'cloudtrail' | 'config' | 'ecs' | 'ecr' | 'sqs' | 'lambda' | 'batch' | 'events' | 'route53' | 'acm' | 'cloudfront' | 'wafv2' | 'billing' | 'organizations' | 'sso';
+export type ServiceId = 'console' | 'vpc' | 'ec2' | 'rds' | 's3' | 'iam' | 'cloudwatch' | 'cloudtrail' | 'config' | 'ecs' | 'ecr' | 'sqs' | 'lambda' | 'batch' | 'events' | 'route53' | 'acm' | 'cloudfront' | 'wafv2' | 'billing' | 'organizations' | 'sso' | 'guardduty' | 'securityhub' | 'ssm' | 'arc';
 
 /** Global in the console (the Region selector shows グローバル). ACM is regional: CloudFront certificates live in us-east-1. */
 export const GLOBAL_SERVICES: ServiceId[] = ['iam', 's3', 'route53', 'cloudfront', 'wafv2', 'billing', 'organizations', 'sso'];
@@ -103,6 +108,12 @@ export const ROUTES: ConsoleRoute[] = [
   ...CONTAINER_ROUTES,
   ...EDGE_ROUTES,
   ...ORG_ROUTES,
+  // 拡張機能のコース (lessons 42-47)
+  ...GUARDDUTY_ROUTES,
+  ...SECURITYHUB_ROUTES,
+  ...ACCESS_ANALYZER_ROUTES,
+  ...SSM_ROUTES,
+  ...ARC_ROUTES,
   { pattern: '/billing/home', service: 'billing', crumbs: () => [{ text: '請求とコスト管理', href: '/billing/home' }, { text: 'ホーム', href: '' }], render: () => <BillingHome /> },
   ...EC2_ROUTES,
 ];

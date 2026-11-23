@@ -1,5 +1,5 @@
-import { createHashHistory, createRootRoute, createRoute, createRouter, Navigate, Outlet, redirect } from '@tanstack/react-router';
-import { CoursesPage } from '../pages/CoursesPage';
+import { createHashHistory, createRootRoute, createRoute, createRouter, lazyRouteComponent, Navigate, Outlet, redirect } from '@tanstack/react-router';
+import { CliCoursesPage, CoursesPage } from '../pages/CoursesPage';
 import { LessonPage } from '../pages/LessonPage';
 import { ProgressPage } from '../pages/ProgressPage';
 import { PromptPage } from '../pages/PromptPage';
@@ -12,6 +12,9 @@ const routeTree = rootRoute.addChildren([
   createRoute({ getParentRoute: () => rootRoute, path: '/progress', component: ProgressPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/prompt', component: PromptPage }),
   createRoute({ getParentRoute: () => rootRoute, path: '/lessons/$lessonId', component: LessonPage }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/cli', component: CliCoursesPage }),
+  // the terminal (Lifo + xterm) is only loaded for CLI lessons
+  createRoute({ getParentRoute: () => rootRoute, path: '/cli/lessons/$lessonId', component: lazyRouteComponent(() => import('../pages/CliLessonPage'), 'CliLessonPage') }),
 ]);
 
 // Hash history: GitHub Pages serves only index.html, so reload / direct access must not hit the server path.

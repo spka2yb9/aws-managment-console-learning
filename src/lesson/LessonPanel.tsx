@@ -28,6 +28,7 @@ export function LessonPanel({
   onRestart,
   onExit,
   nextLesson,
+  onInsert,
 }: {
   lesson: Lesson;
   phase: LessonPhase;
@@ -40,6 +41,8 @@ export function LessonPanel({
   onRestart: () => void;
   onExit: () => void;
   nextLesson?: () => void;
+  /** CLI lessons: types a command into the terminal (also hides the console-only parts: guide toggle, browser tab) */
+  onInsert?: (cmd: string) => void;
 }) {
   const total = lesson.steps.length;
   const step = lesson.steps[index];
@@ -89,7 +92,7 @@ export function LessonPanel({
       );
     if (phase === 'validation') return <ValidationSpinner />;
     if (phase === 'result' && result) return <ResultPanel result={result} onNext={() => send({ type: 'NEXT' })} onRetry={() => send({ type: 'RETRY' })} />;
-    if (step.type === 'exercise') return <ExercisePanel ex={step} ctx={ctx} guide={guide} onGuideChange={onGuideChange} onSubmit={(r) => send({ type: 'SUBMIT', result: r })} />;
+    if (step.type === 'exercise') return <ExercisePanel ex={step} ctx={ctx} guide={guide} onGuideChange={onGuideChange} onInsert={onInsert} onOpenBrowser={() => setTab('browser')} onSubmit={(r) => send({ type: 'SUBMIT', result: r })} />;
     if (step.type === 'quiz') return <QuizPanel key={index} quiz={step} onSubmit={(r) => send({ type: 'SUBMIT', result: r })} />;
     return null;
   })();
@@ -141,7 +144,7 @@ export function LessonPanel({
               label: '構成図',
               content: tab === 'diagram' && <LazyDiagram title="現在の構成 (Live)" spec="live" />,
             },
-            { id: 'browser', label: 'ブラウザ', content: <SimBrowser /> },
+            ...(onInsert ? [] : [{ id: 'browser', label: 'ブラウザ', content: <SimBrowser /> }]),
             ...(lesson.loadTest ? [{ id: 'load', label: '負荷テスト', content: tab === 'load' && <LoadTestPanel /> }] : []),
           ]}
         />

@@ -3,6 +3,7 @@ import { trail } from './cloudtrail';
 import { nameOf } from './env';
 import { hash } from './ids';
 import { DB_INSTANCE_CLASSES } from './rds';
+import { impairedAt, lbAzs, shiftedAwayAz } from './ext/zonalshift';
 import { AwsError, type AwsEnv, type ComparisonOperator, type DbInstance, type Dimension, type Instance, type LoadBalancer, type LogGroup, type MetricAlarm, type Statistic } from './types';
 
 /**
@@ -64,15 +65,15 @@ export interface MetricRef {
 export const metricInfo = (r: Pick<MetricRef, 'namespace' | 'metricName'>) => METRICS.find((m) => m.namespace === r.namespace && m.metricName === r.metricName);
 export const sameMetric = (a: MetricRef, b: MetricRef) => a.namespace === b.namespace && a.metricName === b.metricName && JSON.stringify(a.dimensions) === JSON.stringify(b.dimensions);
 
-/** graph URLs of the metrics page: ns~metric~dim~value,... */
-export const encodeGraph = (refs: MetricRef[]) => refs.map((r) => [r.namespace, r.metricName, r.dimensions[0].name, r.dimensions[0].value].join('~')).join(',');
+/** graph URLs of the metrics page: ns~metric~dim~value[~dim~value],... */
+export const encodeGraph = (refs: MetricRef[]) => refs.map((r) => [r.namespace, r.metricName, ...r.dimensions.flatMap((d) => [d.name, d.value])].join('~')).join(',');
 export const decodeGraph = (s?: string): MetricRef[] =>
   (s ?? '')
     .split(',')
     .filter(Boolean)
     .map((x) => {
-      const [namespace, metricName, name, value] = x.split('~');
-      return { namespace, metricName, dimensions: [{ name, value }] };
+      const [namespace, metricName, ...dims] = x.split('~');
+      return { namespace, metricName, dimensions: Array.from({ length: Math.max(1, dims.length / 2) }, (_, n) => ({ name: dims[2 * n], value: dims[2 * n + 1] })) };
     });
 
 /** The ALB's LoadBalancer dimension: the part of the ARN after "loadbalancer/" (app/name/id). */
@@ -82,12 +83,17 @@ export function metricFor(namespace: string, metricName: string, value: string):
   return { namespace, metricName, dimensions: [{ name: metricInfo({ namespace, metricName })!.dimension, value }] };
 }
 
+/** "Per AppELB, per AZ" metric: the AZ of the targets that answered (LoadBalancer stays first, like the other ALB metrics) */
+export const albAzMetric = (lb: LoadBalancer, metricName: string, az: string): MetricRef => ({ namespace: 'AWS/ApplicationELB', metricName, dimensions: [{ name: 'LoadBalancer', value: lbDimension(lb) }, { name: 'AvailabilityZone', value: az }] });
+
 /** Every metric the account publishes (what "すべてのメトリクス" can browse), with the resource's display name. */
 export function listMetrics(env: AwsEnv): (MetricRef & { resourceName: string })[] {
   const out: (MetricRef & { resourceName: string })[] = [];
   const add = (ns: string, value: string, resourceName: string) => METRICS.filter((m) => m.namespace === ns).forEach((m) => out.push({ ...metricFor(ns, m.metricName, value), resourceName }));
   env.instances.filter((i) => i.state !== 'terminated').forEach((i) => add('AWS/EC2', i.instanceId, nameOf(i)));
   env.loadBalancers.forEach((lb) => add('AWS/ApplicationELB', lbDimension(lb), lb.loadBalancerName));
+  // ponytail: per-AZ ALB metrics only where AZs matter to the lesson (zonal shift state), so other lessons' metric lists stay as they were
+  if (env.zonalShift) env.loadBalancers.forEach((lb) => lbAzs(env, lb).forEach((az) => METRICS.filter((m) => m.namespace === 'AWS/ApplicationELB').forEach((m) => out.push({ ...albAzMetric(lb, m.metricName, az), resourceName: lb.loadBalancerName }))));
   env.dbInstances.forEach((db) => add('AWS/RDS', db.dbInstanceIdentifier, db.dbInstanceIdentifier));
   env.autoScalingGroups.forEach((g) => {
     add('AWS/AutoScaling', g.autoScalingGroupName, g.autoScalingGroupName);
@@ -138,7 +144,10 @@ function model(env: AwsEnv) {
     const tgArns = lb.listeners.map((l) => l.targetGroupArn);
     return { lb, fixed: servingTargets(env, lb).filter((i) => !managed.has(i.instanceId)), scaled: lb.state === 'active' ? asg.filter((x) => x.g.targetGroupArns.some((a) => tgArns.includes(a))) : [] };
   });
-  const targetsAt = (s: (typeof serving)[number], t: number) => [...s.fixed, ...s.scaled.filter((x) => inService(x.r, t)).map((x) => x.i!)];
+  const targetsAt = (s: (typeof serving)[number], t: number) => {
+    const away = shiftedAwayAz(env, s.lb, t);
+    return [...s.fixed, ...s.scaled.filter((x) => inService(x.r, t)).map((x) => x.i!)].filter((i) => i.availabilityZone !== away);
+  };
   const web = [...new Set(serving.flatMap((s) => [...s.fixed, ...s.scaled.map((x) => x.i!)]))];
   /** web instances whose app queries this DB */
   const clients = (db: DbInstance) => web.filter((i) => i.app?.dbInstanceIdentifier === db.dbInstanceIdentifier);
@@ -233,14 +242,24 @@ function source(md: Model, ref: MetricRef): Source | undefined {
     if (ref.metricName === 'GroupDesiredCapacity') return { alive: (t) => t >= created, resolution: 1, sample: (_, t) => [...g.desiredHistory].reverse().find((d) => d.at <= t)?.value ?? g.desiredCapacity };
   }
   if (ref.namespace === 'AWS/ApplicationELB') {
-    const lb = env.loadBalancers.find((x) => lbDimension(x) === value);
+    // per-AZ metrics also carry AvailabilityZone: only the targets in that AZ count
+    const az = ref.dimensions.find((d) => d.name === 'AvailabilityZone')?.value;
+    const lb = env.loadBalancers.find((x) => lbDimension(x) === (az ? ref.dimensions.find((d) => d.name === 'LoadBalancer')?.value : value));
     if (!lb) return;
     const created = Date.parse(lb.createdTime);
-    const alive = (t: number) => t >= created && lb.state === 'active' && md.serving(lb, t).length > 0;
-    const rt = (m: number, t: number) => 0.035 + 0.02 * rnd(`${lb.loadBalancerName}rt`, m) + Math.max(0, ...md.serving(lb, t).map((i) => md.dbWait(md.appDb(i), m, t)));
+    const targets = (t: number) => md.serving(lb, t).filter((i) => !az || i.availabilityZone === az);
+    const alive = (t: number) => t >= created && lb.state === 'active' && targets(t).length > 0;
+    const key = `${lb.loadBalancerName}${az ?? ''}`;
+    /** share of the requests these targets get, and the part of it that lands in an impaired AZ (gray failure: slow, mostly time out) */
+    const share = (t: number) => targets(t).length / Math.max(1, md.serving(lb, t).length);
+    const gray = (t: number) => targets(t).filter((i) => impairedAt(env, i.availabilityZone, t)).length / Math.max(1, targets(t).length);
+    const base = (m: number, t: number) => 0.035 + 0.02 * rnd(`${lb.loadBalancerName}rt`, m) + Math.max(0, ...targets(t).map((i) => md.dbWait(md.appDb(i), m, t)));
+    const rt = (m: number, t: number) => base(m, t) + gray(t) * (4.6 + 1.2 * rnd(`${key}gray`, m));
+    const requests = (t: number) => requestsPerSecond(env, t) * 60 * share(t);
     if (ref.metricName === 'TargetResponseTime') return { alive, resolution: 1, sample: rt };
-    if (ref.metricName === 'RequestCount') return { alive, resolution: 1, sample: (_, t) => Math.round(requestsPerSecond(env, t) * 60) };
-    if (ref.metricName === 'HTTPCode_Target_5XX_Count') return { alive, resolution: 1, sample: (m, t) => (rt(m, t) > 1.5 ? Math.round(requestsPerSecond(env, t) * 60 * 0.03 * rnd(`${lb.loadBalancerName}5xx`, m)) : 0) };
+    if (ref.metricName === 'RequestCount') return { alive, resolution: 1, sample: (_, t) => Math.round(requests(t)) };
+    if (ref.metricName === 'HTTPCode_Target_5XX_Count')
+      return { alive, resolution: 1, sample: (m, t) => (base(m, t) > 1.5 ? Math.round(requests(t) * 0.03 * rnd(`${lb.loadBalancerName}5xx`, m)) : 0) + Math.round(requests(t) * gray(t) * (0.8 + 0.15 * rnd(`${key}g5xx`, m))) };
   }
   if (ref.namespace === 'AWS/RDS') {
     const db = env.dbInstances.find((x) => x.dbInstanceIdentifier === value);

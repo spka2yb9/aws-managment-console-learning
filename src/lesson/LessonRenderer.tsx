@@ -52,14 +52,34 @@ export function StaticContent({ content }: { content: LessonContent }) {
   }
 }
 
-export function ExercisePanel({ ex, ctx, onSubmit, guide, onGuideChange }: { ex: ConsoleExerciseContent; ctx: TaskContext; onSubmit: (r: ValidationResult) => void; guide: boolean; onGuideChange: (v: boolean) => void }) {
+/** CLI lessons: the current task's example command, revealed on request and typed into the terminal on click. */
+function CommandHint({ command, onInsert }: { command: string; onInsert: (cmd: string) => void }) {
+  const [shown, setShown] = useState(false);
+  if (!shown)
+    return (
+      <Button variant="inline-link" onClick={() => setShown(true)} data-testid="show-command">
+        コマンド例を見る
+      </Button>
+    );
+  return (
+    <SpaceBetween size="xs">
+      <pre className="code-block" data-testid="command-example">{command}</pre>
+      <Button iconName="script" onClick={() => onInsert(command)} data-testid="insert-command">
+        ターミナルに入力
+      </Button>
+    </SpaceBetween>
+  );
+}
+
+export function ExercisePanel({ ex, ctx, onSubmit, guide, onGuideChange, onInsert, onOpenBrowser }: { ex: ConsoleExerciseContent; ctx: TaskContext; onSubmit: (r: ValidationResult) => void; guide: boolean; onGuideChange: (v: boolean) => void; onInsert?: (cmd: string) => void; onOpenBrowser?: () => void }) {
   const { done, current } = taskProgress(ex, ctx);
   const task = ex.tasks[current];
+  const command = task?.command && (typeof task.command === 'string' ? task.command : task.command(ctx));
   return (
     <Container
       data-testid="exercise-panel"
       header={
-        <Header variant="h3" description={<>Task {Math.min(current + 1, ex.tasks.length)} / {ex.tasks.length}</>} actions={<Toggle checked={guide} onChange={(e) => onGuideChange(e.detail.checked)}>ガイド表示</Toggle>}>
+        <Header variant="h3" description={<>Task {Math.min(current + 1, ex.tasks.length)} / {ex.tasks.length}</>} actions={!onInsert && <Toggle checked={guide} onChange={(e) => onGuideChange(e.detail.checked)}>ガイド表示</Toggle>}>
           {ex.title}
         </Header>
       }
@@ -78,7 +98,16 @@ export function ExercisePanel({ ex, ctx, onSubmit, guide, onGuideChange }: { ex:
         </ol>
         {!!task?.hint && (
           <ExpandableSection headerText="Hint" variant="footer" defaultExpanded data-testid="hint">
-            {richText(task.hint)}
+            <SpaceBetween size="s">
+              <div>{richText(task.hint)}</div>
+              {onInsert && command && <CommandHint key={task.id} command={command} onInsert={onInsert} />}
+              {/* console lessons: tasks that open a URL point at the simulator's browser tab, which is easy to miss */}
+              {!onInsert && onOpenBrowser && /ブラウザ/.test(task.title + task.hint) && (
+                <Button iconName="share" onClick={onOpenBrowser} data-testid="open-browser-tab">
+                  「ブラウザ」タブを開く
+                </Button>
+              )}
+            </SpaceBetween>
           </ExpandableSection>
         )}
         <Box float="right">

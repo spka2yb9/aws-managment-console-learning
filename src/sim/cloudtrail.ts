@@ -34,7 +34,7 @@ export const quietly = <T>(fn: () => T): T => withActor(null, 0, fn);
 export const iamUserActor = (env: AwsEnv, userName: string, sourceIPAddress: string, o: Partial<Actor> = {}): Actor => ({ userName, type: 'IAMUser', arn: `arn:aws:iam::${env.accountId}:user/${userName}`, sourceIPAddress, userAgent: 'AWS Internal', ...o });
 export const CLI_USER_AGENT = 'aws-cli/2.17.20 md/awscrt#0.20.11 ua/2.0 os/linux#5.15.0 md/arch#x86_64 lang/python#3.11.9 md/pyimpl#CPython cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.22 md/prompt#off md/command#';
 
-export type EventSource = 'ec2' | 'elasticloadbalancing' | 'rds' | 'iam' | 's3' | 'monitoring' | 'config' | 'signin' | 'autoscaling' | 'ecs' | 'ecr' | 'sqs' | 'lambda' | 'logs' | 'batch' | 'events' | 'route53' | 'acm' | 'cloudfront' | 'wafv2' | 'organizations' | 'sso';
+export type EventSource = 'ec2' | 'elasticloadbalancing' | 'rds' | 'iam' | 's3' | 'monitoring' | 'config' | 'signin' | 'autoscaling' | 'ecs' | 'ecr' | 'sqs' | 'lambda' | 'logs' | 'batch' | 'events' | 'route53' | 'acm' | 'cloudfront' | 'wafv2' | 'organizations' | 'sso' | 'guardduty' | 'securityhub' | 'access-analyzer' | 'ssm' | 'arc-zonal-shift';
 
 /** IAM (a global service) and console sign-in are logged in us-east-1 */
 const GLOBAL: EventSource[] = ['iam', 'signin'];

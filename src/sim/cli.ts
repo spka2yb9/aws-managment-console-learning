@@ -1,6 +1,7 @@
 // A tiny Amazon Linux shell for "EC2 Instance Connect": enough of the AWS CLI and IMDS to debug
 // "who am I?" and "why AccessDenied?" the way you would on a real instance.
 import { getInstance } from './env';
+import { imdsCurl, metadataOptions, parseCurl } from './ext/credentials';
 import { instanceRole, sessionArn } from './iam';
 import { canConnect, canReachInternetFrom } from './network';
 import { currentTables, writeTables } from './rds';
@@ -74,7 +75,8 @@ const apiError = (operation: string, e: AwsError): CliResult => ({ ok: false, op
 /** Credentials from the instance profile, as the CLI's credential chain would find them via IMDS. */
 function credentials(env: AwsEnv, i: Instance): { caller?: S3Caller; roleId?: string; roleName?: string; fail?: CliResult } {
   const r = instanceRole(env, i.instanceId);
-  if (!r.role || r.problem) return { fail: { ok: false, errorCode: 'NoCredentials', output: 'Unable to locate credentials. You can configure credentials by running "aws configure".' } };
+  // the CLI asks IMDS with an IMDSv2 token, so only a disabled endpoint stops it
+  if (!r.role || r.problem || metadataOptions(i).httpEndpoint === 'disabled') return { fail: { ok: false, errorCode: 'NoCredentials', output: 'Unable to locate credentials. You can configure credentials by running "aws configure".' } };
   return {
     caller: { principal: { type: 'role', roleName: r.role.roleName, sessionName: i.instanceId }, context: { 'aws:SecureTransport': true, 'aws:SourceIp': i.publicIpAddress ?? i.privateIpAddress } },
     roleId: r.role.roleId,
@@ -128,12 +130,14 @@ const HELP = `このシミュレーターで使えるコマンド:
   aws s3api get-object --bucket BUCKET --key KEY FILE
   aws s3api get-bucket-policy --bucket BUCKET
   curl http://169.254.169.254/latest/meta-data/iam/security-credentials/
+  curl -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"   (IMDSv2 のトークン。GET には -H "X-aws-ec2-metadata-token: トークン" を付ける)
   mysql [-h HOST] [-u USER] [-pPASSWORD] [DATABASE] -e "SQL"   (SHOW TABLES / SELECT COUNT(*) FROM t / DELETE FROM t)
   ./SCRIPT.sh
   ls [-a], cat FILE, whoami, hostname, pwd, clear, help`;
 
 /** Local files: app.log plus whatever was downloaded (passed in by the caller from the command history). */
-export function execCli(env: AwsEnv, instanceId: string, line: string, downloads: Record<string, string>): CliResult {
+/** user: the OS user of the shell (Session Manager sessions run as ssm-user) */
+export function execCli(env: AwsEnv, instanceId: string, line: string, downloads: Record<string, string>, user = 'ec2-user'): CliResult {
   const i = getInstance(env, instanceId);
   const files = { ...i.homeFiles, ...downloads };
   const [cmd, ...args] = tokenize(line.trim());
@@ -144,7 +148,7 @@ export function execCli(env: AwsEnv, instanceId: string, line: string, downloads
     case 'help':
       return { ok: true, output: HELP };
     case 'whoami':
-      return { ok: true, output: 'ec2-user' };
+      return { ok: true, output: user };
     case 'pwd':
       return { ok: true, output: '/home/ec2-user' };
     case 'hostname':
@@ -160,9 +164,11 @@ export function execCli(env: AwsEnv, instanceId: string, line: string, downloads
     case 'echo':
       return { ok: true, output: args.join(' ') };
     case 'curl': {
-      const url = args.filter((a) => !a.startsWith('-'))[0] ?? '';
-      const m = /^https?:\/\/169\.254\.169\.254(\/.*)$/.exec(url);
-      if (m) return { ok: true, output: imds(env, i, m[1]) };
+      // $(...) in an argument runs first: the IMDSv2 one-liner -H "X-aws-ec2-metadata-token: $(curl -X PUT ...)"
+      const req = parseCurl(args.map((a) => a.replace(/\$\((.+)\)/g, (_, inner: string) => execCli(env, instanceId, inner, downloads).output.trim())));
+      const url = req.url;
+      const m = /^(?:https?:\/\/)?169\.254\.169\.254(\/.*)$/.exec(url);
+      if (m) return imdsCurl(i, req, m[1], (p) => imds(env, i, p));
       return { ok: false, output: `curl: (6) Could not resolve host: ${url.replace(/^https?:\/\//, '').split('/')[0] || '(none)'}` };
     }
     case 'aws':

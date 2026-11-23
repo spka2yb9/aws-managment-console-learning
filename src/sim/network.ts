@@ -98,8 +98,9 @@ export function endpointOf(env: AwsEnv, id: string): Endpoint | null {
   return null;
 }
 
-export function describeMatch(env: AwsEnv, ev: SgEvaluation): string {
-  if (!ev.rule || !ev.groupId) return '';
+/** ev が無いのは、評価するパケットが無かったとき (終了したインスタンスには IP が無い) */
+export function describeMatch(env: AwsEnv, ev: SgEvaluation | undefined): string {
+  if (!ev?.rule || !ev.groupId) return '';
   const g = env.securityGroups.find((x) => x.groupId === ev.groupId);
   const src = sourceOf(ev.rule);
   const srcGroup = env.securityGroups.find((x) => x.groupId === src);

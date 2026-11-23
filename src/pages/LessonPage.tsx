@@ -27,7 +27,7 @@ const sessionSchema = z.object({
   commands: z.array(z.any()),
 });
 
-function fresh(lesson: Lesson): ConsoleSnapshot {
+export function fresh(lesson: Lesson): ConsoleSnapshot {
   const env = lesson.scenario();
   return { env, path: lesson.startPath, region: lesson.startRegion ?? env.region, visited: [], copied: [], browser: [], commands: [] };
 }

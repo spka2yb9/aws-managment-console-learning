@@ -8,6 +8,11 @@ import { advanceLoadBalancers } from './elb';
 import { advanceDbInstances, advanceDbSnapshots } from './rds';
 import type { AwsEnv } from './types';
 import { advanceNatGateways } from './vpc';
+import { advanceAccessAnalyzer, hasAccessAnalyzerTransitions } from './ext/accessanalyzer';
+import { advanceGuardDuty, hasGuardDutyTransitions } from './ext/guardduty';
+import { advanceSecurityHub, hasSecurityHubTransitions } from './ext/securityhub';
+import { advanceSsm, hasSsmTransitions } from './ext/ssm';
+import { advanceZonalShift, hasZonalShiftTransitions } from './ext/zonalshift';
 
 /** Is anything in a transitional state (pending, provisioning, creating...)? */
 export function hasTransitions(env: AwsEnv): boolean {
@@ -25,7 +30,12 @@ export function hasTransitions(env: AwsEnv): boolean {
     (env.batchJobs ?? []).some((j) => j.status !== 'SUCCEEDED' && j.status !== 'FAILED') ||
     (env.certificates ?? []).some((c) => c.status === 'PENDING_VALIDATION') ||
     (env.distributions ?? []).some((d) => d.status === 'InProgress' || d.invalidations.some((i) => i.status === 'InProgress')) ||
-    (env.natGateways ?? []).some((n) => n.state === 'pending' || n.state === 'deleting')
+    (env.natGateways ?? []).some((n) => n.state === 'pending' || n.state === 'deleting') ||
+    hasGuardDutyTransitions(env) ||
+    hasSecurityHubTransitions(env) ||
+    hasAccessAnalyzerTransitions(env) ||
+    hasSsmTransitions(env) ||
+    hasZonalShiftTransitions(env)
   );
 }
 
@@ -33,6 +43,6 @@ export function hasTransitions(env: AwsEnv): boolean {
 export function advanceTime(env: AwsEnv, now: number): boolean {
   let changed = false;
   // Each advance* finishes one transition per resource, so repeat until nothing moves (creating -> backing-up -> available).
-  while ([advanceInstances(env, now), advanceLoadBalancers(env, now), advanceDbInstances(env, now), advanceDbSnapshots(env, now), advanceAutoScaling(env, now), advanceEcs(env, now), advanceServerless(env, now), advanceEvents(env, now), advanceBatch(env, now), advanceEdge(env, now), advanceNatGateways(env, now)].some(Boolean)) changed = true;
+  while ([advanceInstances(env, now), advanceLoadBalancers(env, now), advanceDbInstances(env, now), advanceDbSnapshots(env, now), advanceAutoScaling(env, now), advanceEcs(env, now), advanceServerless(env, now), advanceEvents(env, now), advanceBatch(env, now), advanceEdge(env, now), advanceNatGateways(env, now), advanceGuardDuty(env, now), advanceSecurityHub(env, now), advanceAccessAnalyzer(env, now), advanceSsm(env, now), advanceZonalShift(env, now)].some(Boolean)) changed = true;
   return changed;
 }

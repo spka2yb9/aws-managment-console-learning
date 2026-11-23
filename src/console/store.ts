@@ -1,9 +1,9 @@
 import { create } from 'zustand';
-import { iamUserActor, withActor } from '../sim/cloudtrail';
+import { CLI_USER_AGENT, iamUserActor, withActor } from '../sim/cloudtrail';
 import { mutate } from '../sim/env';
 import { CLIENT_IP } from '../sim/network';
 import { execCli } from '../sim/cli';
-import { simulateHttp, type HttpResult } from '../sim/http';
+import { simulateHttp, type HttpClient, type HttpResult } from '../sim/http';
 import { recordWafSample, storeInCache } from '../sim/edge';
 import { advanceTime, hasTransitions } from '../sim/time';
 import { AwsError, type AwsEnv } from '../sim/types';
@@ -12,6 +12,7 @@ import type { FlashbarProps } from '@cloudscape-design/components/flashbar';
 export type RunResult<T> = { ok: true; value: T } | { ok: false; error: AwsError };
 
 export interface CommandRecord {
+  /** '' = the learner's PC (CLI lessons), else the EC2 instance the command ran on */
   instanceId: string;
   line: string;
   output: string;
@@ -20,6 +21,14 @@ export interface CommandRecord {
   errorCode?: string;
   file?: { name: string; body: string };
   at: number;
+  /** aws CLI on the learner's PC: 'ec2 create-subnet', the parsed parameters and the global options */
+  command?: string;
+  service?: string;
+  params?: Record<string, unknown>;
+  query?: string;
+  format?: string;
+  region?: string;
+  profile?: string;
 }
 
 export interface ConsoleSnapshot {
@@ -43,8 +52,12 @@ interface ConsoleState extends ConsoleSnapshot {
   tick(now?: number): void;
   flash(type: FlashbarProps.Type, content: string, button?: { text: string; onClick: () => void }): void;
   recordCopy(text: string): void;
-  browse(url: string): HttpResult;
+  /** a request from the learner's browser (default) or another client (curl: no JavaScript, so WAF challenges stop it) */
+  browse(url: string, client?: HttpClient): HttpResult;
   runCommand(instanceId: string, line: string): CommandRecord;
+  /** An AWS CLI call from the learner's PC: like run(), but AwsError is thrown (nothing changes) and CloudTrail shows the CLI's user agent. */
+  cli<T>(op: (draft: AwsEnv) => T, command: string): T;
+  recordCommand(rec: CommandRecord): void;
 }
 
 let flashSeq = 0;
@@ -90,8 +103,8 @@ export const useConsole = create<ConsoleState>()((set, get) => ({
     set({ flashes: [{ id, type, content, dismissible: true, dismissLabel: 'Dismiss', onDismiss: dismiss, ...action }, ...get().flashes].slice(0, 3) });
   },
   recordCopy: (text) => set({ copied: [...get().copied.filter((c) => c !== text), text].slice(-50) }),
-  browse: (url) => {
-    const result = simulateHttp(get().env, url);
+  browse: (url, client) => {
+    const result = simulateHttp(get().env, url, undefined, client);
     // a request can change AWS state (the edge cache, WAF's sampled requests)
     const fx = result.effects;
     const env = fx?.cache || fx?.waf ? mutate(get().env, (d) => {
@@ -106,9 +119,15 @@ export const useConsole = create<ConsoleState>()((set, get) => ({
     // Commands may change the env (aws s3 cp / rm), so they run like any other operation.
     const [env, r] = mutate(get().env, (d) => execCli(d, instanceId, line, files));
     const rec: CommandRecord = { instanceId, line, at: Date.now(), ...r };
-    set({ env, commands: [...get().commands, rec].slice(-100) });
+    set({ env, commands: [...get().commands, rec].slice(-200) });
     return rec;
   },
+  cli: (op, command) => {
+    const [env, value] = mutate(get().env, (d) => withActor(iamUserActor(d, 'learner', CLIENT_IP, { userAgent: CLI_USER_AGENT + command.replace(' ', '.') }), Date.now(), () => op(d)));
+    set({ env });
+    return value;
+  },
+  recordCommand: (rec) => set({ commands: [...get().commands, rec].slice(-200) }),
 }));
 
 export function snapshot(s: ConsoleSnapshot): ConsoleSnapshot {

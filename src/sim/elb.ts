@@ -53,10 +53,22 @@ export function createTargetGroup(env: AwsEnv, input: { name: string; port: numb
   return arn;
 }
 
-export function modifyTargetGroupHealthCheck(env: AwsEnv, arn: string, hc: HealthCheck) {
+/** ヘルスチェックの設定の検証 (作成でも変更でも) */
+export function checkHealthCheck(hc: HealthCheck) {
+  const range = (v: number, field: string, min: number, max: number) => {
+    if (!Number.isInteger(v) || v < min || v > max) throw new AwsError('ValidationError', `1 validation error detected: Value '${v}' at '${field}' failed to satisfy constraint: Member must have value ${v < min ? `greater than or equal to ${min}` : `less than or equal to ${max}`}`);
+  };
+  range(hc.intervalSeconds, 'healthCheckIntervalSeconds', 5, 300);
+  range(hc.timeoutSeconds, 'healthCheckTimeoutSeconds', 2, 120);
+  range(hc.healthyThresholdCount, 'healthyThresholdCount', 2, 10);
+  range(hc.unhealthyThresholdCount, 'unhealthyThresholdCount', 2, 10);
   if (!hc.path.startsWith('/')) throw new AwsError('ValidationError', 'Health check path must begin with a \'/\' character');
   if (hc.port !== 'traffic-port' && (!Number.isInteger(hc.port) || hc.port < 1 || hc.port > 65535)) throw new AwsError('ValidationError', 'Health check port must be between 1 and 65535');
   if (!parseMatcher(hc.matcher)) throw new AwsError('ValidationError', `Health check matcher HTTP code '${hc.matcher}' must be within '200-499' code range`);
+}
+
+export function modifyTargetGroupHealthCheck(env: AwsEnv, arn: string, hc: HealthCheck) {
+  checkHealthCheck(hc);
   getTg(env, arn).healthCheck = { ...hc };
   trail(env, { source: 'elasticloadbalancing', name: 'ModifyTargetGroup', resources: [['AWS::ElasticLoadBalancingV2::TargetGroup', arn]], request: { targetGroupArn: arn, healthCheckPath: hc.path, healthCheckPort: String(hc.port), matcher: { httpCode: hc.matcher } } });
 }

@@ -2,6 +2,7 @@ import type { ConsoleRoute, Crumb } from '../routes';
 import { useConsole } from '../store';
 import { queryParam } from '../ui';
 import { CertificateDetail, CertificateList, CreateInvalidationPage, CreateRecord, DistributionDetail, DistributionList, EditBehavior, EditDistribution, EditIpSet, HostedZoneDetail, HostedZoneList, IpSetDetail, IpSetList, RequestCertificate, WebAclDetail, WebAclList } from './edge';
+import { AddManagedRuleGroups, EditManagedRuleGroup } from './antiddos';
 
 const R53: Crumb = { text: 'Route 53', href: '/route53/hostedzones' };
 const ZONES: Crumb = { text: 'ホストゾーン', href: '/route53/hostedzones' };
@@ -11,6 +12,8 @@ const CF: Crumb = { text: 'CloudFront', href: '/cloudfront/distributions' };
 const DISTS: Crumb = { text: 'ディストリビューション', href: '/cloudfront/distributions' };
 const WAF: Crumb = { text: 'WAF & Shield', href: '/wafv2/webacls' };
 const IPSETS: Crumb = { text: 'IP セット', href: '/wafv2/ipsets' };
+const ACLS: Crumb = { text: 'ウェブ ACL', href: '/wafv2/webacls' };
+const acl = (name: string): Crumb => ({ text: name, href: `/wafv2/webacls/${name}?tab=rules` });
 const here = (text: string): Crumb => ({ text, href: '' });
 const q = (key: string) => queryParam(useConsole.getState().path, key) ?? '';
 const dist = (id: string): Crumb => ({ text: id, href: `/cloudfront/distributions/${id}` });
@@ -29,7 +32,9 @@ export const EDGE_ROUTES: ConsoleRoute[] = [
   { pattern: '/cloudfront/distributions/:id/behaviors/edit', service: 'cloudfront', contentType: 'form', crumbs: (p) => [CF, DISTS, dist(p.id), here('ビヘイビアを編集')], render: (p) => <EditBehavior id={p.id} key={p.id} /> },
   { pattern: '/cloudfront/distributions/:id/invalidations/create', service: 'cloudfront', contentType: 'form', crumbs: (p) => [CF, DISTS, dist(p.id), here('無効化を作成')], render: (p) => <CreateInvalidationPage id={p.id} key={p.id} /> },
   { pattern: '/wafv2/webacls', service: 'wafv2', contentType: 'table', crumbs: () => [WAF, here('ウェブ ACL')], render: () => <WebAclList /> },
-  { pattern: '/wafv2/webacls/:name', service: 'wafv2', crumbs: (p) => [WAF, { text: 'ウェブ ACL', href: '/wafv2/webacls' }, here(p.name)], render: (p) => <WebAclDetail name={p.name} key={p.name} /> },
+  { pattern: '/wafv2/webacls/:name', service: 'wafv2', crumbs: (p) => [WAF, ACLS, here(p.name)], render: (p) => <WebAclDetail name={p.name} key={p.name} /> },
+  { pattern: '/wafv2/webacls/:name/add-managed-rule-groups', service: 'wafv2', contentType: 'form', crumbs: (p) => [WAF, ACLS, acl(p.name), here('マネージドルールグループを追加')], render: (p) => <AddManagedRuleGroups name={p.name} key={p.name} /> },
+  { pattern: '/wafv2/webacls/:name/rules/:rule/edit', service: 'wafv2', contentType: 'form', crumbs: (p) => [WAF, ACLS, acl(p.name), here(`${p.rule} を編集`)], render: (p) => <EditManagedRuleGroup name={p.name} rule={p.rule} key={`${p.name}/${p.rule}`} /> },
   { pattern: '/wafv2/ipsets', service: 'wafv2', contentType: 'table', crumbs: () => [WAF, here('IP セット')], render: () => <IpSetList /> },
   { pattern: '/wafv2/ipsets/:name', service: 'wafv2', crumbs: (p) => [WAF, IPSETS, here(p.name)], render: (p) => <IpSetDetail name={p.name} key={p.name} /> },
   { pattern: '/wafv2/ipsets/:name/edit', service: 'wafv2', contentType: 'form', crumbs: (p) => [WAF, IPSETS, { text: p.name, href: `/wafv2/ipsets/${p.name}` }, here('IP アドレスを編集')], render: (p) => <EditIpSet name={p.name} key={p.name} /> },

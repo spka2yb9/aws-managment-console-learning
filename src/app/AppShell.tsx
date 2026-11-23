@@ -19,7 +19,7 @@ export function AppTopNav({ utilities = [], search }: { utilities?: Parameters<t
   );
 }
 
-export function AppShell({ active, children }: { active: '/courses' | '/progress' | '/prompt'; children: ReactNode }) {
+export function AppShell({ active, children }: { active: '/courses' | '/cli' | '/progress' | '/prompt'; children: ReactNode }) {
   const navigate = useNavigate();
   return (
     <>
@@ -36,7 +36,8 @@ export function AppShell({ active, children }: { active: '/courses' | '/progress
               navigate({ to: e.detail.href.slice(1) });
             }}
             items={[
-              { type: 'link', text: 'Courses', href: '#/courses' },
+              { type: 'link', text: 'Courses (コンソール)', href: '#/courses' },
+              { type: 'link', text: 'Courses (CLI)', href: '#/cli' },
               { type: 'link', text: 'Progress', href: '#/progress' },
               { type: 'link', text: 'Prompt', href: '#/prompt' },
             ]}
